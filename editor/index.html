@@ -1,0 +1,888 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>VRM Scene Editor</title>
+    <style>
+        :root { color-scheme: dark; }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; height: 100%; }
+        body {
+            display: flex;
+            flex-direction: column;
+            background: #1e1e1e;
+            color: #e6e6e6;
+            font-family: system-ui, "Segoe UI", sans-serif;
+            overflow: hidden;
+        }
+        #toolbar {
+            flex: 0 0 auto;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: #2c2c2c;
+            border-bottom: 1px solid #3c3c3c;
+        }
+        #toolbar button {
+            background: #236692;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            padding: 6px 12px;
+            font-size: 13px;
+            cursor: pointer;
+        }
+        #toolbar button:hover { background: #3485bb; }
+        #toolbar button.secondary { background: #444; }
+        #toolbar button.secondary:hover { background: #555; }
+        /* Toolbar dropdown menus ("ファイル" / "リセット" / "ウィンドウ") */
+        .menu-wrap { position: relative; display: inline-flex; }
+        .tb-menu {
+            position: absolute;
+            top: calc(100% + 4px);
+            left: 0;
+            min-width: 168px;
+            background: #2c2c2c;
+            border: 1px solid #4a4a4a;
+            border-radius: 6px;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+            padding: 4px;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            z-index: 100001; /* above floating panels (z≈20+) and the color popup (100000) */
+        }
+        .tb-menu[hidden] { display: none; }
+        /* scoped under #toolbar so it beats the blue "#toolbar button" base style */
+        #toolbar .tb-menu button {
+            background: transparent;
+            color: #e6e6e6;
+            border: none;
+            border-radius: 4px;
+            padding: 7px 12px;
+            font-size: 13px;
+            text-align: left;
+            white-space: nowrap;
+            cursor: pointer;
+        }
+        #toolbar .tb-menu button:hover { background: #3a6ea5; color: #fff; }
+        #toolbar .tb-menu button:disabled { color: #777; cursor: not-allowed; }
+        #toolbar .tb-menu button:disabled:hover { background: transparent; color: #777; }
+        /* push 撮影 + ヘルプ + ⚙設定 as a group to the far right (left→right: 撮影, ヘルプ, 設定) */
+        #capture-btn { margin-left: auto; }
+        #settings-panel {
+            position: absolute;
+            top: 48px;
+            right: 12px;
+            z-index: 10;
+            width: 240px;
+            max-height: calc(100vh - 60px);
+            overflow-y: auto;
+            background: #2c2c2c;
+            border: 1px solid #444;
+            border-radius: 6px;
+            padding: 12px 14px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+            font-size: 12px;
+        }
+        #settings-panel[hidden] { display: none; }
+        #settings-panel .row { margin-bottom: 10px; }
+        #settings-panel .row:last-child { margin-bottom: 0; }
+        #settings-panel label {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+            color: #cfcfcf;
+        }
+        #settings-panel label span { color: #6cb6ff; font-variant-numeric: tabular-nums; }
+        #settings-panel input[type=range] { width: 100%; accent-color: #236692; }
+        #settings-panel .reset-row { text-align: right; margin-top: 12px; }
+        #settings-panel .reset-row button {
+            background: #444; color: #ddd; border: none; border-radius: 4px;
+            padding: 4px 10px; font-size: 12px; cursor: pointer;
+        }
+        #settings-panel .reset-row button:hover { background: #555; }
+        #settings-panel input[type=text] {
+            width: 100%;
+            background: #1e1e1e;
+            color: #e6e6e6;
+            border: 1px solid #444;
+            border-radius: 4px;
+            padding: 4px 6px;
+            font-size: 12px;
+        }
+        #settings-panel input[type=number] {
+            width: 60px; background: #1e1e1e; color: #e6e6e6;
+            border: 1px solid #444; border-radius: 4px; padding: 3px 5px; font-size: 12px;
+        }
+        #settings-panel .expr-range { display: flex; gap: 12px; }
+        #settings-panel .expr-range label { flex: 1; align-items: center; margin-bottom: 0; }
+        #settings-panel select {
+            width: 100%;
+            background: #1e1e1e;
+            color: #e6e6e6;
+            border: 1px solid #444;
+            border-radius: 4px;
+            padding: 4px 6px;
+            font-size: 12px;
+        }
+        #settings-panel .check-row label {
+            justify-content: flex-start;
+            gap: 8px;
+            cursor: pointer;
+        }
+        #settings-panel .check-row input { accent-color: #236692; }
+        #settings-panel hr { border: none; border-top: 1px solid #3c3c3c; margin: 12px 0; }
+        #viewport {
+            flex: 1 1 auto;
+            position: relative;
+            min-height: 0;
+        }
+        /* Small branding + version watermark, bottom-right of the viewport.
+           pointer-events:none so it never blocks the scene or panels under it. */
+        #app-badge {
+            position: absolute;
+            right: 10px;
+            bottom: 6px;
+            z-index: 9; /* above floating panels (z≈8) but BEHIND the settings panel (z=10) */
+            font-size: 12px;
+            line-height: 1;
+            color: rgba(230, 230, 230, 0.55);
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+            letter-spacing: 0.3px;
+            user-select: none;
+            pointer-events: none;
+            white-space: nowrap;
+        }
+        #app-badge .ver { color: rgba(108, 182, 255, 0.7); margin-left: 5px; }
+        #viewport canvas { display: block; width: 100%; height: 100%; }
+        /* Capture-frame guide: a centered square that dims everything outside it.
+           Purely a visual overlay -- it is not part of the rendered PNG. */
+        #capture-frame {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            border: 1px solid rgba(255, 255, 255, 0.9);
+            box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.4);
+            pointer-events: none;
+            z-index: 5;
+        }
+        #capture-frame[hidden] { display: none; }
+        /* Corner ticks for a viewfinder look. */
+        #capture-frame::before, #capture-frame::after {
+            content: "";
+            position: absolute;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.9);
+        }
+        #capture-frame::before { top: -1px; left: -1px; border-right: none; border-bottom: none; }
+        #capture-frame::after { bottom: -1px; right: -1px; border-left: none; border-top: none; }
+        /* Composite preview (image within the capture frame + a type overlay).
+           Starts bottom-left, stacked above the "ルート変換" panel; draggable. */
+        #preview-panel {
+            position: fixed;
+            left: 12px;
+            bottom: 168px;
+            z-index: 8;
+            width: 200px;
+            background: #2c2c2c;
+            border: 1px solid #444;
+            border-radius: 6px;
+            padding: 8px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        /* hidden attr must beat the id-specificity display:flex above, or [×]/toggle won't hide it */
+        #preview-panel[hidden] { display: none; }
+        #preview-panel select {
+            width: 100%;
+            background: #1e1e1e; color: #e6e6e6;
+            border: 1px solid #444; border-radius: 4px;
+            padding: 4px 6px; font-size: 12px;
+        }
+        #preview-canvas {
+            width: 100%;
+            aspect-ratio: 1 / 1;
+            display: block;
+            background: #1a1a1a;
+            border-radius: 4px;
+        }
+        #preview-panel .pv-title {
+            font-size: 12px; color: #cfcfcf; cursor: move; user-select: none;
+            margin: -8px -8px 2px; padding: 5px 8px;
+            background: #383838; border-bottom: 1px solid #4a4a4a; border-radius: 6px 6px 0 0;
+            display: flex; align-items: center; justify-content: space-between; gap: 10px;
+        }
+        #preview-panel .pv-title #pv-close {
+            background: none; border: none; color: #cfcfcf; cursor: pointer;
+            font-size: 14px; line-height: 1; padding: 0 4px; border-radius: 3px;
+        }
+        #preview-panel .pv-title #pv-close:hover { background: #c0392b; color: #fff; }
+        #preview-panel .pv-resize {
+            position: absolute; right: 3px; bottom: 3px; width: 12px; height: 12px;
+            border-right: 2px solid #8a8a8a; border-bottom: 2px solid #8a8a8a;
+            border-radius: 0 0 4px 0; cursor: nwse-resize;
+        }
+        #preview-panel .pv-row { display: flex; align-items: center; gap: 6px; }
+        #preview-panel .pv-row select { flex: 1; min-width: 0; width: auto; }
+        #preview-panel .pv-show {
+            display: flex; align-items: center; gap: 3px;
+            font-size: 11px; color: #cfcfcf; white-space: nowrap; cursor: pointer; user-select: none;
+        }
+        #preview-panel .pv-show input { margin: 0; cursor: pointer; }
+        /* Bottom-left numeric transform panel (root rig: translate / rotate(deg) / scale). */
+        #transform-panel {
+            position: fixed;
+            left: 12px;
+            bottom: 12px;
+            z-index: 8;
+            background: #2c2c2c;
+            border: 1px solid #444;
+            border-radius: 6px;
+            padding: 8px 10px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+        }
+        #transform-panel .tp-title {
+            font-size: 12px; color: #cfcfcf; cursor: move; user-select: none;
+            margin: -8px -10px 7px; padding: 5px 10px;
+            background: #383838; border-bottom: 1px solid #4a4a4a; border-radius: 6px 6px 0 0;
+            display: flex; align-items: center; justify-content: space-between; gap: 12px;
+        }
+        #transform-panel .tp-title #tp-close {
+            background: none; border: none; color: #cfcfcf; cursor: pointer;
+            font-size: 12px; line-height: 1; padding: 0 4px; border-radius: 3px;
+        }
+        #transform-panel .tp-title #tp-close:hover { background: #c0392b; color: #fff; }
+        #transform-panel table { border-collapse: collapse; }
+        #transform-panel thead th { font-weight: bold; font-size: 12px; text-align: center; padding: 0 5px 3px; }
+        #transform-panel thead th:nth-child(2) { color: #ff0000; } /* X = gizmo red */
+        #transform-panel thead th:nth-child(3) { color: #00ff00; } /* Y = gizmo green */
+        #transform-panel thead th:nth-child(4) { color: #0000ff; } /* Z = gizmo blue */
+        #transform-panel tbody th { color: #cfcfcf; font-weight: normal; font-size: 12px; text-align: right; padding-right: 8px; }
+        #transform-panel td { padding: 1px; }
+        #transform-panel input {
+            width: 60px;
+            background: #1e1e1e; color: #e6e6e6;
+            border: 1px solid #444; border-radius: 4px;
+            padding: 3px 5px; font-size: 12px; text-align: right;
+        }
+        #transform-panel input:focus { border-color: #3485bb; outline: none; }
+        /* 操作モードパネル: 矢印=通常(ボーン編集OFF) / ボーン=コントロールポイント表示(ON) を縦並びで切替。 */
+        #tool-panel {
+            position: fixed; left: 270px; bottom: 12px; z-index: 8;
+            background: #2c2c2c; border: 1px solid #444; border-radius: 6px;
+            padding: 8px 10px; box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+        }
+        #tool-panel[hidden] { display: none; }
+        #tool-panel .tl-title {
+            cursor: move; user-select: none;
+            margin: -8px -10px 6px; padding: 0;
+            background: #383838; border-bottom: 1px solid #4a4a4a; border-radius: 6px 6px 0 0;
+        }
+        #tool-panel .tl-title::after {
+            content: ""; display: block; width: 18px; height: 2px; margin: 2.5px auto;
+            background: #5a5a5a; border-radius: 1px;
+        }
+        #tool-panel .tl-row { display: flex; flex-direction: column; gap: 6px; }
+        #tool-panel .tl-btn {
+            display: flex; align-items: center; justify-content: center;
+            width: 36px; height: 36px; padding: 0; cursor: pointer;
+            background: #1e1e1e; color: #e6e6e6;
+            border: 1px solid #444; border-radius: 5px;
+            font-size: 18px; line-height: 1;
+        }
+        #tool-panel .tl-btn:hover { border-color: #3485bb; }
+        #tool-panel .tl-btn.active { background: #236692; border-color: #3485bb; color: #fff; }
+        #tool-panel .tl-ico { display: flex; align-items: center; justify-content: center; line-height: 1; }
+        #tool-panel .tl-ico svg { display: block; }
+        /* Floating expression panel: draggable title + accordion + scrollable body. */
+        #expr-panel {
+            position: fixed; left: 12px; top: 96px; z-index: 9;
+            width: 250px; max-height: 72vh;
+            display: flex; flex-direction: column;
+            background: #2c2c2c; border: 1px solid #444; border-radius: 6px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.5); color: #e6e6e6;
+        }
+        #expr-panel[hidden] { display: none; }
+        #expr-panel .ep-title {
+            flex: 0 0 auto; font-size: 13px; color: #cfcfcf; cursor: move; user-select: none;
+            padding: 6px 10px; background: #383838; border-bottom: 1px solid #4a4a4a; border-radius: 6px 6px 0 0;
+            display: flex; align-items: center; justify-content: space-between; gap: 10px;
+        }
+        #expr-panel .ep-title #expr-close {
+            background: none; border: none; color: #cfcfcf; cursor: pointer;
+            font-size: 16px; line-height: 1; padding: 0 4px; border-radius: 3px;
+        }
+        #expr-panel .ep-title #expr-close:hover { background: #c0392b; color: #fff; }
+        #expr-body { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
+        #expr-panel .ep-resize {
+            flex: 0 0 auto; height: 10px; cursor: ns-resize; position: relative;
+            background: #383838; border-top: 1px solid #4a4a4a; border-radius: 0 0 6px 6px;
+        }
+        #expr-panel .ep-resize::after {
+            content: ""; position: absolute; left: 50%; top: 50%; width: 28px;
+            transform: translate(-50%, -50%); border-top: 2px dotted #888;
+        }
+        #expr-panel .ep-resize:hover { background: #454545; }
+        #expr-body .ep-empty { padding: 10px; color: #9a9a9a; font-size: 12px; }
+        .ep-section { border-bottom: 1px solid #3a3a3a; }
+        .ep-header {
+            width: 100%; text-align: left; background: #333; color: #d6d6d6;
+            border: none; padding: 7px 10px; cursor: pointer; font-size: 12px;
+        }
+        .ep-header:hover { background: #3f3f3f; }
+        .ep-content { padding: 4px 10px 8px; }
+        .ep-content[hidden] { display: none; }
+        .ep-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+        .ep-row label { flex: 0 0 84px; font-size: 11px; color: #cfcfcf; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .ep-row input[type=range] { flex: 1 1 auto; min-width: 0; }
+        .ep-row .ep-num { flex: 0 0 30px; text-align: right; font-size: 11px; color: #9a9a9a; font-variant-numeric: tabular-nums; }
+        .ep-content .ep-check { display: flex; align-items: center; gap: 6px; margin: 6px 0; font-size: 12px; color: #cfcfcf; cursor: pointer; }
+        .ep-content .ep-check input { flex: 0 0 auto; margin: 0; }
+        /* Hand-pose panel — mirrors the 表情 floating panel (preset + weight per hand). */
+        #hand-pose-panel {
+            position: fixed; left: 12px; top: 96px; z-index: 9; width: 250px;
+            display: flex; flex-direction: column;
+            background: #2c2c2c; border: 1px solid #444; border-radius: 6px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.5); color: #e6e6e6;
+        }
+        #hand-pose-panel[hidden] { display: none; }
+        #hand-pose-panel .ep-title {
+            flex: 0 0 auto; font-size: 13px; color: #cfcfcf; cursor: move; user-select: none;
+            padding: 6px 10px; background: #383838; border-bottom: 1px solid #4a4a4a; border-radius: 6px 6px 0 0;
+            display: flex; align-items: center; justify-content: space-between; gap: 10px;
+        }
+        #hand-pose-panel .ep-title #hand-pose-close {
+            background: none; border: none; color: #cfcfcf; cursor: pointer;
+            font-size: 16px; line-height: 1; padding: 0 4px; border-radius: 3px;
+        }
+        #hand-pose-panel .ep-title #hand-pose-close:hover { background: #c0392b; color: #fff; }
+        #hand-pose-panel .hp-body { padding: 8px 10px; }
+        #hand-pose-panel .hp-row { display: flex; align-items: center; gap: 8px; margin: 7px 0; }
+        #hand-pose-panel .hp-label { flex: 0 0 50px; font-size: 12px; color: #cfcfcf; white-space: nowrap; }
+        #hand-pose-panel .hp-select {
+            flex: 1 1 auto; min-width: 0; background: #1f1f1f; color: #e6e6e6;
+            border: 1px solid #555; border-radius: 4px; padding: 3px 5px; font-size: 12px;
+        }
+        #hand-pose-panel .hp-weight { flex: 1 1 auto; min-width: 0; }
+        #hand-pose-panel .hp-sep { height: 1px; background: #3a3a3a; margin: 8px 0; }
+        /* Pose library panel — bundled *.vroidpose / *.json picker. */
+        #pose-lib-panel {
+            position: fixed; left: 12px; top: 96px; z-index: 9; width: 250px;
+            display: flex; flex-direction: column;
+            background: #2c2c2c; border: 1px solid #444; border-radius: 6px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.5); color: #e6e6e6;
+        }
+        #pose-lib-panel[hidden] { display: none; }
+        #pose-lib-panel .ep-title {
+            flex: 0 0 auto; font-size: 13px; color: #cfcfcf; cursor: move; user-select: none;
+            padding: 6px 10px; background: #383838; border-bottom: 1px solid #4a4a4a; border-radius: 6px 6px 0 0;
+            display: flex; align-items: center; justify-content: space-between; gap: 10px;
+        }
+        #pose-lib-panel .ep-title .pl-title-btns { display: flex; align-items: center; gap: 4px; }
+        #pose-lib-panel .ep-title button {
+            background: none; border: none; color: #cfcfcf; cursor: pointer;
+            font-size: 15px; line-height: 1; padding: 0 4px; border-radius: 3px;
+        }
+        #pose-lib-panel .ep-title #pose-lib-reload:hover { background: #2f6e3a; color: #fff; }
+        #pose-lib-panel .ep-title #pose-lib-close:hover { background: #c0392b; color: #fff; }
+        #pose-lib-panel .pl-body { padding: 6px; max-height: 50vh; overflow-y: auto; }
+        #pose-lib-panel .pl-item {
+            display: block; width: 100%; text-align: left; box-sizing: border-box;
+            background: #1f1f1f; color: #e6e6e6; border: 1px solid #4a4a4a; border-radius: 4px;
+            padding: 6px 9px; margin: 4px 0; font-size: 12px; cursor: pointer;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        #pose-lib-panel .pl-item:hover { background: #34506e; border-color: #4a90d9; }
+        #pose-lib-panel .pl-item .pl-ext { color: #7a8aaa; font-size: 10px; margin-left: 6px; }
+        #pose-lib-panel .pl-empty { color: #888; font-size: 11px; padding: 10px 6px; text-align: center; }
+        /* After-effects (bloom) panel — mirrors the 表情 floating panel. */
+        #fx-panel { position: fixed; left: 12px; top: 96px; z-index: 9; width: 250px; max-height: 72vh; display: flex; flex-direction: column; background: #2c2c2c; border: 1px solid #444; border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.5); color: #e6e6e6; }
+        #fx-panel[hidden] { display: none; }
+        #fx-panel .ep-title { flex: 0 0 auto; font-size: 13px; color: #cfcfcf; cursor: move; user-select: none; padding: 6px 10px; background: #383838; border-bottom: 1px solid #4a4a4a; border-radius: 6px 6px 0 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        #fx-panel .ep-title #fx-close { background: none; border: none; color: #cfcfcf; cursor: pointer; font-size: 16px; line-height: 1; padding: 0 4px; border-radius: 3px; }
+        #fx-panel .ep-title #fx-close:hover { background: #c0392b; color: #fff; }
+        #fx-body { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
+        #fx-panel .ep-resize { flex: 0 0 auto; height: 10px; cursor: ns-resize; position: relative; background: #383838; border-top: 1px solid #4a4a4a; border-radius: 0 0 6px 6px; }
+        #fx-panel .ep-resize::after { content: ""; position: absolute; left: 50%; top: 50%; width: 28px; transform: translate(-50%, -50%); border-top: 2px dotted #888; }
+        #fx-panel .ep-resize:hover { background: #454545; }
+        .fx-color-row .fx-swatch { flex: 0 0 auto; width: 30px; height: 20px; border: 1px solid #666; border-radius: 3px; cursor: pointer; padding: 0; }
+        .fx-color-row .fx-hex { flex: 1 1 auto; min-width: 0; background: #1e1e1e; color: #e6e6e6; border: 1px solid #444; border-radius: 3px; padding: 2px 4px; font-size: 12px; }
+        .fx-color-row .fx-eyedrop { flex: 0 0 auto; background: #444; color: #ddd; border: none; border-radius: 3px; padding: 2px 6px; font-size: 11px; cursor: pointer; }
+        .fx-color-row .fx-eyedrop:hover { background: #555; }
+        .fx-reset-row { text-align: right; margin-top: 8px; }
+        .fx-reset-row .fx-reset { background: #444; color: #ddd; border: none; border-radius: 4px; padding: 4px 12px; font-size: 11px; cursor: pointer; }
+        .fx-reset-row .fx-reset:hover { background: #555; }
+        #fx-panel .fx-header { display: flex; align-items: center; background: #333; }
+        #fx-panel .fx-header:hover { background: #3a3a3a; }
+        #fx-panel .fx-header .fx-arrow { flex: 0 0 auto; background: transparent; border: none; color: #d6d6d6; cursor: pointer; font-size: 12px; padding: 7px 2px 7px 10px; }
+        #fx-panel .fx-header > input[type=checkbox] { flex: 0 0 auto; margin: 0 6px; accent-color: #236692; cursor: pointer; }
+        #fx-panel .fx-header .fx-title { flex: 1 1 auto; text-align: left; background: transparent; border: none; color: #d6d6d6; cursor: pointer; font-size: 12px; padding: 7px 10px 7px 0; }
+        /* Custom HSV color picker popup. */
+        #color-popup { position: fixed; z-index: 100000; background: #2c2c2c; border: 1px solid #555; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.6); padding: 10px; }
+        #color-popup[hidden] { display: none; }
+        #color-popup .cp-wheel { position: relative; width: 180px; height: 180px; touch-action: none; }
+        #color-popup .cp-ring { position: absolute; inset: 0; border-radius: 50%; cursor: crosshair;
+            background: conic-gradient(hsl(0,100%,50%), hsl(60,100%,50%), hsl(120,100%,50%), hsl(180,100%,50%), hsl(240,100%,50%), hsl(300,100%,50%), hsl(360,100%,50%));
+            -webkit-mask: radial-gradient(circle closest-side, transparent 68%, #000 69%); mask: radial-gradient(circle closest-side, transparent 68%, #000 69%); }
+        #color-popup .cp-sv { position: absolute; left: 50%; top: 50%; width: 88px; height: 88px; transform: translate(-50%, -50%); border-radius: 3px; cursor: crosshair;
+            background-image: linear-gradient(to top, #000, rgba(0,0,0,0)), linear-gradient(to right, #fff, rgba(255,255,255,0)); background-color: hsl(0,100%,50%); }
+        #color-popup .cp-ring-marker, #color-popup .cp-sv-marker { position: absolute; width: 13px; height: 13px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,0.7); transform: translate(-50%, -50%); pointer-events: none; }
+        #color-popup .cp-foot { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+        #color-popup .cp-preview { width: 26px; height: 20px; border: 1px solid #666; border-radius: 3px; flex: 0 0 auto; }
+        #color-popup .cp-hex { flex: 1 1 auto; min-width: 0; background: #1e1e1e; color: #e6e6e6; border: 1px solid #444; border-radius: 3px; padding: 3px 5px; font-size: 12px; }
+        /* Toast notifications (top-right, auto-dismiss, stackable). */
+        #toast-container {
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            pointer-events: none;
+        }
+        .toast {
+            min-width: 220px;
+            max-width: 360px;
+            padding: 10px 14px;
+            border-radius: 6px;
+            font-size: 13px;
+            line-height: 1.4;
+            color: #fff;
+            background: #333;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+            border-left: 4px solid #6cb6ff;
+            opacity: 0;
+            transform: translateX(20px);
+            transition: opacity 0.25s ease, transform 0.25s ease;
+            word-break: break-all;
+            white-space: pre-line;
+        }
+        .toast.show { opacity: 1; transform: translateX(0); }
+        .toast.success { border-left-color: #4caf50; }
+        .toast.error { border-left-color: #e05252; }
+        .toast.info { border-left-color: #6cb6ff; }
+        /* Centered modal dialogs (バージョン情報 / ライセンス). A dimming backdrop
+           plus a centered card; [hidden] hides the whole overlay. */
+        .modal-overlay {
+            position: fixed; inset: 0; z-index: 1000;
+            background: rgba(0, 0, 0, 0.55);
+            display: flex; align-items: center; justify-content: center;
+        }
+        .modal-overlay[hidden] { display: none; }
+        .modal {
+            background: #2c2c2c; color: #e6e6e6;
+            border: 1px solid #444; border-radius: 8px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+            width: min(520px, 92vw); max-height: 86vh;
+            display: flex; flex-direction: column;
+        }
+        /* ライセンスウィンドウのみ横幅を 1.2 倍（520 -> 624px） */
+        #license-modal .modal { width: min(624px, 92vw); }
+        .modal .modal-title {
+            flex: 0 0 auto; font-size: 14px; color: #e6e6e6; user-select: none;
+            padding: 10px 14px; background: #383838;
+            border-bottom: 1px solid #4a4a4a; border-radius: 8px 8px 0 0;
+            display: flex; align-items: center; justify-content: space-between; gap: 12px;
+        }
+        .modal .modal-title button {
+            background: none; border: none; color: #cfcfcf; cursor: pointer;
+            font-size: 18px; line-height: 1; padding: 0 5px; border-radius: 3px;
+        }
+        .modal .modal-title button:hover { background: #c0392b; color: #fff; }
+        .modal .modal-body { flex: 1 1 auto; overflow-y: auto; padding: 14px 16px; font-size: 13px; line-height: 1.6; }
+        .modal .modal-body h3 { font-size: 13px; margin: 14px 0 6px; color: #6cb6ff; }
+        .modal .modal-body h3:first-child { margin-top: 0; }
+        .modal .modal-body p { margin: 4px 0; }
+        .modal .modal-body a { color: #6cb6ff; text-decoration: none; }
+        .modal .modal-body a:hover { text-decoration: underline; }
+        .modal .modal-body dl { margin: 4px 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; }
+        .modal .modal-body dt { color: #9aa7b3; white-space: nowrap; }
+        .modal .modal-body dd { margin: 0; }
+        .modal .modal-body .muted { color: #9aa7b3; font-size: 12px; }
+        .modal .app-logo { font-size: 16px; font-weight: bold; color: #e6e6e6; }
+        .modal .app-logo .ver { color: #6cb6ff; margin-left: 8px; font-weight: normal; }
+    </style>
+</head>
+<body>
+    <div id="toolbar">
+        <div class="menu-wrap">
+            <button id="file-btn" class="secondary" title="ファイル">ファイル ▾</button>
+            <div id="file-menu" class="tb-menu" hidden>
+                <button id="load-btn" type="button">VRM 読込</button>
+            </div>
+        </div>
+        <div class="menu-wrap">
+            <button id="reset-menu-btn" class="secondary" title="リセット">リセット ▾</button>
+            <div id="reset-menu" class="tb-menu" hidden>
+                <button id="reset-btn" type="button">カメラリセット</button>
+                <button id="pose-reset-btn" type="button">ポーズリセット</button>
+                <button id="root-reset-btn" type="button">ルートリセット</button>
+            </div>
+        </div>
+        <div id="window-menu-wrap" class="menu-wrap">
+            <button id="window-btn" class="secondary" title="ウィンドウを開く">ウィンドウ ▾</button>
+            <div id="window-menu" class="tb-menu" hidden>
+                <button type="button" data-target="preview-panel">プレビュー</button>
+                <button type="button" data-target="transform-panel">ルート変換</button>
+                <button type="button" data-target="expr-panel">表情</button>
+                <button type="button" data-target="hand-pose-panel">手のポーズ</button>
+                <button type="button" data-target="pose-lib-panel">ポーズライブラリ</button>
+                <button type="button" data-target="fx-panel">アフターエフェクト</button>
+            </div>
+        </div>
+        <button id="capture-btn">📷 撮影</button>
+        <div id="help-menu-wrap" class="menu-wrap">
+            <button id="help-btn" class="secondary" title="ヘルプ">ヘルプ ▾</button>
+            <div id="help-menu" class="tb-menu" hidden>
+                <button id="about-btn" type="button">バージョン情報</button>
+                <button id="license-btn" type="button">ライセンス</button>
+                <button id="controls-btn" type="button">操作説明</button>
+            </div>
+        </div>
+        <button id="settings-btn" class="secondary">⚙ 設定</button>
+    </div>
+    <div id="settings-panel" hidden>
+        <div class="row">
+            <label>回転速度 <span id="rotate-val">1.0</span></label>
+            <input id="rotate-speed" type="range" min="0.1" max="5" step="0.1" value="1">
+        </div>
+        <div class="row">
+            <label>ズーム速度 <span id="zoom-val">1.0</span></label>
+            <input id="zoom-speed" type="range" min="0.1" max="5" step="0.1" value="1">
+        </div>
+        <div class="row">
+            <label>パン速度 <span id="pan-val">1.0</span></label>
+            <input id="pan-speed" type="range" min="0.1" max="5" step="0.1" value="1">
+        </div>
+        <div class="row">
+            <label>ロール(傾き) <span id="roll-val">0°</span></label>
+            <input id="roll-angle" type="range" min="-180" max="180" step="1" value="0">
+        </div>
+        <div class="reset-row">
+            <button id="settings-reset">既定値に戻す</button>
+        </div>
+        <hr>
+        <div class="row check-row">
+            <label><input id="bone-edit" type="checkbox" checked> ボーン編集</label>
+        </div>
+        <div class="row check-row">
+            <label><input id="camera-gaze" type="checkbox"> カメラ目線</label>
+        </div>
+        <div class="row check-row">
+            <label><input id="show-lineart" type="checkbox"> ラインアートをエフェクト窓に表示</label>
+        </div>
+        <div class="row check-row">
+            <label><input id="show-comic" type="checkbox"> コミックをエフェクト窓に表示</label>
+        </div>
+        <div class="row">
+            <label>表現パラメータ範囲</label>
+            <div class="expr-range">
+                <label>下限 <input id="expr-min" type="number" step="0.1" value="0"></label>
+                <label>上限 <input id="expr-max" type="number" step="0.1" value="1.2"></label>
+            </div>
+        </div>
+        <div class="row">
+            <label>Hint Weight <span id="hint-weight-val">1.00</span></label>
+            <input id="hint-weight" type="range" min="0" max="1" step="0.05" value="1">
+        </div>
+        <div class="row">
+            <label>IKアンカー（空間固定）</label>
+            <div class="check-row"><label><input id="anchor-leftHand" type="checkbox"> 左手</label></div>
+            <div class="check-row"><label><input id="anchor-rightHand" type="checkbox"> 右手</label></div>
+            <div class="check-row"><label><input id="anchor-leftFoot" type="checkbox"> 左足</label></div>
+            <div class="check-row"><label><input id="anchor-rightFoot" type="checkbox"> 右足</label></div>
+            <div class="check-row"><label><input id="anchor-chest" type="checkbox"> 胸（上半身）</label></div>
+        </div>
+        <hr>
+        <div class="row">
+            <label>カメラ名</label>
+            <input id="camera-name" type="text" value="camera1" placeholder="camera1">
+        </div>
+        <div class="row">
+            <label>出力タイプ</label>
+            <div class="check-row"><label><input id="type-image" type="checkbox" checked> image (RGB)</label></div>
+            <div class="check-row"><label><input id="type-mask" type="checkbox" checked> mask (白シルエット)</label></div>
+            <div class="check-row"><label><input id="type-mask-hands" type="checkbox" checked> mask(hands) (手のみ)</label></div>
+            <div class="check-row"><label><input id="type-depth" type="checkbox" checked> depth (近=白)</label></div>
+            <div class="check-row"><label><input id="type-normal" type="checkbox" checked> normal (視点空間)</label></div>
+            <div class="check-row"><label><input id="type-openpose-body" type="checkbox" checked> OpenPose Body</label></div>
+            <div class="check-row"><label><input id="type-openpose-hands" type="checkbox" checked> OpenPose Hands</label></div>
+            <div class="check-row"><label><input id="type-openpose-bodyhands" type="checkbox" checked> OpenPose Body + Hands</label></div>
+        </div>
+        <div class="row">
+            <label>保存先フォルダ</label>
+            <input id="save-folder" type="text" placeholder="(既定: ComfyUI output)">
+        </div>
+        <div class="row">
+            <label>出力解像度</label>
+            <select id="capture-res">
+                <option value="512">512 × 512</option>
+                <option value="1024" selected>1024 × 1024</option>
+                <option value="2048">2048 × 2048</option>
+            </select>
+        </div>
+        <div class="row check-row">
+            <label><input id="transparent-bg" type="checkbox"> 背景を透過する</label>
+        </div>
+    </div>
+    <div id="viewport">
+        <div id="capture-frame"></div>
+        <div id="app-badge">VRM Scene Editor <span class="ver">v0.1a</span></div>
+        <div id="preview-panel">
+            <div class="pv-title"><span>プレビュー</span><button id="pv-close" type="button" title="閉じる">×</button></div>
+            <div class="pv-row">
+                <select id="preview-type" title="重ね合わせるタイプ"></select>
+                <label class="pv-show" title="ベース画像の表示/非表示"><input id="preview-show-image" type="checkbox" checked>画像</label>
+            </div>
+            <canvas id="preview-canvas" width="256" height="256"></canvas>
+            <div class="pv-resize" title="ドラッグでサイズ変更"></div>
+        </div>
+        <div id="transform-panel">
+            <div class="tp-title"><span>ルート変換</span><button id="tp-close" type="button" title="閉じる">×</button></div>
+            <table>
+                <thead><tr><th></th><th>X</th><th>Y</th><th>Z</th></tr></thead>
+                <tbody>
+                    <tr><th>移動</th>
+                        <td><input id="tp-px" type="number" step="0.05" value="0"></td>
+                        <td><input id="tp-py" type="number" step="0.05" value="0"></td>
+                        <td><input id="tp-pz" type="number" step="0.05" value="0"></td></tr>
+                    <tr><th>回転</th>
+                        <td><input id="tp-rx" type="number" step="5" value="0"></td>
+                        <td><input id="tp-ry" type="number" step="5" value="0"></td>
+                        <td><input id="tp-rz" type="number" step="5" value="0"></td></tr>
+                    <tr><th>拡大</th>
+                        <td><input id="tp-sx" type="number" step="0.1" value="1"></td>
+                        <td><input id="tp-sy" type="number" step="0.1" value="1"></td>
+                        <td><input id="tp-sz" type="number" step="0.1" value="1"></td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div id="tool-panel">
+            <div class="tl-title" title="操作モード（ドラッグで移動）"></div>
+            <div class="tl-row">
+                <button class="tl-btn" data-bone="off" type="button" title="矢印：通常操作（ボーン編集OFF・コントロールポイント非表示）"><span class="tl-ico">↖</span></button>
+                <button class="tl-btn" data-bone="on" type="button" title="ボーン：コントロールポイント／IKターゲットを表示（ボーン編集ON）"><span class="tl-ico"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8.5" y1="15.5" x2="15.5" y2="8.5"/><circle cx="7" cy="17" r="2.6"/><circle cx="17" cy="7" r="2.6"/></svg></span></button>
+            </div>
+        </div>
+        <div id="expr-panel" hidden>
+            <div class="ep-title"><span>表情</span><button id="expr-close" type="button" title="閉じる">×</button></div>
+            <div id="expr-body"></div>
+            <div class="ep-resize" title="ドラッグで上下サイズ変更"></div>
+        </div>
+        <div id="hand-pose-panel" hidden>
+            <div class="ep-title"><span>手のポーズ</span><button id="hand-pose-close" type="button" title="閉じる">×</button></div>
+            <div class="hp-body">
+                <div class="hp-row"><span class="hp-label">左手</span><select id="hp-left-preset" class="hp-select"></select></div>
+                <div class="hp-row"><span class="hp-label">ウェイト</span><input id="hp-left-weight" class="hp-weight" type="range" min="0" max="1" step="0.01" value="1"><span id="hp-left-weight-val" class="ep-num">1.00</span></div>
+                <div class="hp-sep"></div>
+                <div class="hp-row"><span class="hp-label">右手</span><select id="hp-right-preset" class="hp-select"></select></div>
+                <div class="hp-row"><span class="hp-label">ウェイト</span><input id="hp-right-weight" class="hp-weight" type="range" min="0" max="1" step="0.01" value="1"><span id="hp-right-weight-val" class="ep-num">1.00</span></div>
+            </div>
+        </div>
+        <div id="pose-lib-panel" hidden>
+            <div class="ep-title"><span>ポーズライブラリ</span><span class="pl-title-btns"><button id="pose-lib-reload" type="button" title="一覧を更新">↻</button><button id="pose-lib-close" type="button" title="閉じる">×</button></span></div>
+            <div class="pl-body"><div class="pl-empty">読込中 ...</div></div>
+        </div>
+        <div id="fx-panel" hidden>
+            <div class="ep-title"><span>アフターエフェクト</span><button id="fx-close" type="button" title="閉じる">×</button></div>
+            <div id="fx-body">
+                <div class="ep-section">
+                    <div class="fx-header">
+                        <button class="fx-arrow" type="button" title="開閉">▾</button>
+                        <input id="aa-enabled" type="checkbox" title="アンチエイリアスを有効化">
+                        <button class="fx-title" type="button" title="開閉">アンチエイリアス</button>
+                    </div>
+                    <div class="ep-content">
+                        <div class="ep-row"><label>強度</label><input id="aa-strength" type="range" min="0" max="1" step="0.05"><span id="aa-strength-val" class="ep-num">1.76x</span></div>
+                    </div>
+                </div>
+                <div class="ep-section">
+                    <div class="fx-header">
+                        <button class="fx-arrow" type="button" title="開閉">▾</button>
+                        <input id="studio-look" type="checkbox" title="スタジオルックを有効化">
+                        <button class="fx-title" type="button" title="開閉">スタジオルック</button>
+                    </div>
+                    <div class="ep-content">
+                        <label class="ep-check"><input id="studio-shadow" type="checkbox"> 接地影を出す（重い場合はOFF）</label>
+                        <div class="ep-row"><label>ライト明るさ</label><input id="studio-bright" type="range" min="0.5" max="2" step="0.05" value="1"><span id="studio-bright-val" class="ep-num">1.00</span></div>
+                        <div class="ep-row fx-color-row"><label>背景色</label><button id="studio-bg-swatch" class="fx-swatch" type="button" title="クリックで色選択"></button><input id="studio-bg-hex" type="text" class="fx-hex" value="#d7dbe2" spellcheck="false"><button id="studio-bg-eyedrop" class="fx-eyedrop" type="button" title="スポイト（画面から色を取得）">スポイト</button></div>
+                    </div>
+                </div>
+                <div class="ep-section">
+                    <div class="fx-header">
+                        <button class="fx-arrow" type="button" title="開閉">▾</button>
+                        <input id="bloom-enabled" type="checkbox" title="ブルームを有効化">
+                        <button class="fx-title" type="button" title="開閉">ブルーム</button>
+                    </div>
+                    <div class="ep-content">
+                        <div class="ep-row"><label>強さ</label><input id="bloom-strength" type="range" min="0" max="10" step="0.1"><span id="bloom-strength-val" class="ep-num">0.80</span></div>
+                        <div class="ep-row"><label>しきい値</label><input id="bloom-threshold" type="range" min="0" max="1" step="0.01"><span id="bloom-threshold-val" class="ep-num">0.85</span></div>
+                        <div class="ep-row fx-color-row"><label>カラー</label><button id="bloom-color-swatch" class="fx-swatch" type="button" title="クリックで色選択"></button><input id="bloom-color-hex" type="text" class="fx-hex" value="#ffffff" spellcheck="false"><button id="bloom-eyedrop" class="fx-eyedrop" type="button" title="スポイト（画面から色を取得）">スポイト</button></div>
+                        <div class="fx-reset-row"><button id="bloom-reset" class="fx-reset" type="button">リセット</button></div>
+                    </div>
+                </div>
+                <div class="ep-section">
+                    <div class="fx-header">
+                        <button class="fx-arrow" type="button" title="開閉">▾</button>
+                        <input id="grade-enabled" type="checkbox" title="カラーグレーディングを有効化">
+                        <button class="fx-title" type="button" title="開閉">カラーグレーディング</button>
+                    </div>
+                    <div class="ep-content">
+                        <div class="ep-row"><label>温度</label><input id="grade-temp" type="range" min="-100" max="100" step="1" value="0"><span id="grade-temp-val" class="ep-num">0</span></div>
+                        <div class="ep-row"><label>色合い</label><input id="grade-tint" type="range" min="-100" max="100" step="1" value="0"><span id="grade-tint-val" class="ep-num">0</span></div>
+                        <div class="ep-row"><label>色相</label><input id="grade-hue" type="range" min="-100" max="100" step="1" value="0"><span id="grade-hue-val" class="ep-num">0</span></div>
+                        <div class="ep-row"><label>彩度</label><input id="grade-sat" type="range" min="-100" max="100" step="1" value="0"><span id="grade-sat-val" class="ep-num">0</span></div>
+                        <div class="ep-row"><label>コントラスト</label><input id="grade-contrast" type="range" min="-100" max="100" step="1" value="0"><span id="grade-contrast-val" class="ep-num">0</span></div>
+                        <div class="ep-row fx-color-row"><label>カラーフィルタ</label><button id="grade-filter-swatch" class="fx-swatch" type="button" title="クリックで色選択"></button><input id="grade-filter-hex" type="text" class="fx-hex" value="#ffffff" spellcheck="false"><button id="grade-eyedrop" class="fx-eyedrop" type="button" title="スポイト（画面から色を取得）">スポイト</button></div>
+                        <div class="fx-reset-row"><button id="grade-reset" class="fx-reset" type="button">リセット</button></div>
+                    </div>
+                </div>
+                <div class="ep-section">
+                    <div class="fx-header">
+                        <button class="fx-arrow" type="button" title="開閉">▾</button>
+                        <input id="comic-enabled" type="checkbox" title="コミックを有効化">
+                        <button class="fx-title" type="button" title="開閉">コミック</button>
+                    </div>
+                    <div class="ep-content">
+                        <div class="ep-row"><label>カラーの割合</label><input id="comic-colorRatio" type="range" min="0" max="1" step="0.01"><span id="comic-colorRatio-val" class="ep-num">0.70</span></div>
+                        <div class="ep-row"><label>最小しきい値</label><input id="comic-minT" type="range" min="0" max="1" step="0.01"><span id="comic-minT-val" class="ep-num">0.30</span></div>
+                        <div class="ep-row"><label>最大しきい値</label><input id="comic-maxT" type="range" min="0" max="1" step="0.01"><span id="comic-maxT-val" class="ep-num">0.85</span></div>
+                        <div class="ep-row"><label>トーンの細かさ</label><input id="comic-fine" type="range" min="0" max="180" step="1"><span id="comic-fine-val" class="ep-num">90</span></div>
+                        <div class="ep-row"><label>トーンの濃さ</label><input id="comic-density" type="range" min="0" max="1" step="0.01"><span id="comic-density-val" class="ep-num">0.50</span></div>
+                        <div class="ep-row"><label>油彩</label><input id="comic-oil" type="range" min="0" max="3" step="0.05"><span id="comic-oil-val" class="ep-num">0.00</span></div>
+                        <div class="ep-row fx-color-row"><label>カラー</label><button id="comic-color-swatch" class="fx-swatch" type="button" title="クリックで色選択"></button><input id="comic-color-hex" type="text" class="fx-hex" value="#1a1a1a" spellcheck="false"><button id="comic-color-eyedrop" class="fx-eyedrop" type="button" title="スポイト（画面から色を取得）">スポイト</button></div>
+                        <div class="ep-row fx-color-row"><label>インナーカラー</label><button id="comic-inner-swatch" class="fx-swatch" type="button" title="クリックで色選択"></button><input id="comic-inner-hex" type="text" class="fx-hex" value="#4c4c4c" spellcheck="false"><button id="comic-inner-eyedrop" class="fx-eyedrop" type="button" title="スポイト（画面から色を取得）">スポイト</button></div>
+                        <div class="ep-row fx-color-row"><label>アウターカラー</label><button id="comic-outer-swatch" class="fx-swatch" type="button" title="クリックで色選択"></button><input id="comic-outer-hex" type="text" class="fx-hex" value="#cccccc" spellcheck="false"><button id="comic-outer-eyedrop" class="fx-eyedrop" type="button" title="スポイト（画面から色を取得）">スポイト</button></div>
+                        <div class="fx-reset-row"><button id="comic-reset" class="fx-reset" type="button">リセット</button></div>
+                    </div>
+                </div>
+                <div class="ep-section">
+                    <div class="fx-header">
+                        <button class="fx-arrow" type="button" title="開閉">▾</button>
+                        <input id="lineart-enabled" type="checkbox" title="ラインアートを有効化">
+                        <button class="fx-title" type="button" title="開閉">ラインアート</button>
+                    </div>
+                    <div class="ep-content">
+                        <div class="ep-row"><label>線の太さ</label><input id="lineart-thickness" type="range" min="0.5" max="4" step="0.1"><span id="lineart-thickness-val" class="ep-num">1.2</span></div>
+                        <div class="ep-row"><label>深度しきい値</label><input id="lineart-depth" type="range" min="0" max="1.5" step="0.01"><span id="lineart-depth-val" class="ep-num">0.30</span></div>
+                        <div class="ep-row"><label>法線しきい値</label><input id="lineart-normal" type="range" min="0" max="1.5" step="0.01"><span id="lineart-normal-val" class="ep-num">0.40</span></div>
+                        <div class="ep-row fx-color-row"><label>線の色</label><button id="lineart-color-swatch" class="fx-swatch" type="button" title="クリックで色選択"></button><input id="lineart-color-hex" type="text" class="fx-hex" value="#000000" spellcheck="false"><button id="lineart-eyedrop" class="fx-eyedrop" type="button" title="スポイト（画面から色を取得）">スポイト</button></div>
+                        <div class="fx-reset-row"><button id="lineart-reset" class="fx-reset" type="button">リセット</button></div>
+                    </div>
+                </div>
+            </div>
+            <div class="ep-resize" title="ドラッグで上下サイズ変更"></div>
+        </div>
+    </div>
+    <div id="toast-container"></div>
+    <input id="vrm-input" type="file" accept=".vrm,.glb,.gltf" style="display:none">
+    <div id="color-popup" hidden>
+        <div class="cp-wheel">
+            <div class="cp-ring"></div>
+            <div class="cp-sv"></div>
+            <div class="cp-ring-marker"></div>
+            <div class="cp-sv-marker"></div>
+        </div>
+        <div class="cp-foot"><span class="cp-preview"></span><input class="cp-hex" type="text" spellcheck="false" maxlength="7"></div>
+    </div>
+    <!-- バージョン情報ダイアログ -->
+    <div id="about-modal" class="modal-overlay" hidden>
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="about-title">
+            <div class="modal-title"><span id="about-title">バージョン情報</span><button type="button" data-close title="閉じる">×</button></div>
+            <div class="modal-body">
+                <p class="app-logo">VRM Scene Editor <span class="ver" id="about-version">v0.1a</span></p>
+                <p class="muted">ComfyUI 用 VRM シーンエディタ / キャプチャノード</p>
+                <dl>
+                    <dt>レンダリング</dt><dd>three.js</dd>
+                    <dt>VRM</dt><dd>@pixiv/three-vrm</dd>
+                    <dt>対応形式</dt><dd>VRM 0.x / VRM 1.0 / glTF / GLB</dd>
+                </dl>
+                <p class="muted">ライセンスの詳細は「ヘルプ &rsaquo; ライセンス」をご覧ください。</p>
+            </div>
+        </div>
+    </div>
+    <!-- ライセンスダイアログ -->
+    <div id="license-modal" class="modal-overlay" hidden>
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="license-title">
+            <div class="modal-title"><span id="license-title">ライセンス</span><button type="button" data-close title="閉じる">×</button></div>
+            <div class="modal-body">
+                <h3>同梱モデル (sample.vrm)</h3>
+                <p><b>VRM1_Constraint_Twist_Sample</b><br>&copy; 2022 pixiv Inc.</p>
+                <dl>
+                    <dt>作者</dt><dd>pixiv Inc.</dd>
+                    <dt>再配布</dt><dd>許可</dd>
+                    <dt>改変</dt><dd>許可（改変版の再配布も可）</dd>
+                    <dt>商用利用</dt><dd>許可（法人を含む）</dd>
+                    <dt>クレジット表記</dt><dd>任意（不要）</dd>
+                </dl>
+                <p class="muted">ライセンス全文: <a href="https://vrm.dev/licenses/1.0/" target="_blank" rel="noopener noreferrer">VRM 1.0 標準ライセンス (vrm.dev)</a></p>
+
+                <h3>使用ライブラリ</h3>
+                <dl>
+                    <dt>three.js</dt><dd>MIT License — <a href="https://github.com/mrdoob/three.js" target="_blank" rel="noopener noreferrer">github.com/mrdoob/three.js</a></dd>
+                    <dt>@pixiv/three-vrm</dt><dd>MIT License — <a href="https://github.com/pixiv/three-vrm" target="_blank" rel="noopener noreferrer">github.com/pixiv/three-vrm</a></dd>
+                </dl>
+                <p class="muted">three.js の GLTFLoader / OrbitControls / TransformControls も MIT License で配布されています。</p>
+            </div>
+        </div>
+    </div>
+    <!-- 操作説明ダイアログ -->
+    <div id="controls-modal" class="modal-overlay" hidden>
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="controls-title">
+            <div class="modal-title"><span id="controls-title">操作説明</span><button type="button" data-close title="閉じる">×</button></div>
+            <div class="modal-body">
+                <h3>カメラ</h3>
+                <dl>
+                    <dt>左ドラッグ</dt><dd>回転</dd>
+                    <dt>右ドラッグ</dt><dd>平行移動（パン）</dd>
+                    <dt>ホイール</dt><dd>ズーム</dd>
+                    <dt>← / → キー</dt><dd>カメラの傾き（ロール）</dd>
+                </dl>
+
+                <h3>ボーン編集</h3>
+                <p class="muted">「ボーン」ボタン（または設定の「ボーン編集」）がONのときにコントロールポイントが表示されます。</p>
+                <dl>
+                    <dt>青い球（ボーン）</dt><dd>クリックで選択（回転リング表示）／ドラッグで回転</dd>
+                    <dt>Alt＋ドラッグ</dt><dd>選択中ボーンのひねり（Z軸回転）</dd>
+                    <dt>緑・橙の球（IK）</dt><dd>ドラッグで手足を誘導（IK）</dd>
+                    <dt>中央の球（腰）</dt><dd>ドラッグで全身を移動</dd>
+                </dl>
+
+                <h3>右クリックメニュー</h3>
+                <dl>
+                    <dt>IKターゲット上</dt><dd>アンカー固定／解除</dd>
+                    <dt>腰の球上</dt><dd>移動モード／回転モードの切替</dd>
+                </dl>
+
+                <h3>重なったコントロールを選ぶ</h3>
+                <dl>
+                    <dt>Alt（押している間）</dt><dd>回転リングを一時的に隠す</dd>
+                    <dt>Alt＋クリック</dt><dd>奥のコントロールを1つずつ選択</dd>
+                </dl>
+
+                <h3>元に戻す / やり直し</h3>
+                <dl>
+                    <dt>Ctrl＋Z</dt><dd>元に戻す</dd>
+                    <dt>Ctrl＋Y / Ctrl＋Shift＋Z</dt><dd>やり直し</dd>
+                </dl>
+                <p class="muted">対象はポーズ・表情など。全体の移動・回転（ルート変換）は対象外です。</p>
+
+                <h3>その他</h3>
+                <dl>
+                    <dt>📷 撮影</dt><dd>現在のビューをキャプチャ</dd>
+                    <dt>リセット</dt><dd>カメラ／ポーズ／ルート（全体の位置・向き）</dd>
+                </dl>
+            </div>
+        </div>
+    </div>
+    <script type="module" src="/vrm-scene-editor-assets/main.js?v=53"></script>
+</body>
+</html>

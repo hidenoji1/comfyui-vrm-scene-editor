@@ -1,0 +1,52 @@
+{
+  "_about": "VRoid Studio hand-pose AnimationClips (L_Hand_*), extracted from VRoidStudio 2.13.0 data.unity3d as Mecanim humanoid muscle values. Per finger, the DOFs are [1Stretched, Spread, 2Stretched, 3Stretched]; negative Stretched = flexion (curl), positive = extension. Right hand is mirrored from the left at runtime, so only the left hand is stored. These feed tools/gen_hand_presets.py to produce editor/main.js HAND_PRESETS.",
+  "Natural": {
+    "Thumb":  {"1Stretched": -1.46509, "Spread": -0.11828, "2Stretched": -0.07405, "3Stretched": 0.84012},
+    "Index":  {"1Stretched": 0.35475,  "Spread": -0.5667,  "2Stretched": 0.75015,  "3Stretched": 0.54911},
+    "Middle": {"1Stretched": 0.13544,  "Spread": -0.05477, "2Stretched": 0.53113,  "3Stretched": 0.47048},
+    "Ring":   {"1Stretched": -0.08423, "Spread": -1.70233, "2Stretched": 0.27981,  "3Stretched": 0.49675},
+    "Little": {"1Stretched": -0.20106, "Spread": -1.18852, "2Stretched": 0.2578,   "3Stretched": -0.17375}
+  },
+  "Grip": {
+    "Thumb":  {"1Stretched": -2.04098, "Spread": -0.60678, "2Stretched": -0.32929, "3Stretched": -1.33153},
+    "Index":  {"1Stretched": -0.77243, "Spread": -1.00972, "2Stretched": -1.00659, "3Stretched": -1.45827},
+    "Middle": {"1Stretched": -0.81425, "Spread": -0.39927, "2Stretched": -1.00634, "3Stretched": -1.57105},
+    "Ring":   {"1Stretched": -0.90907, "Spread": -1.87203, "2Stretched": -0.96155, "3Stretched": -1.29636},
+    "Little": {"1Stretched": -0.9151,  "Spread": -1.33342, "2Stretched": -0.76356, "3Stretched": -1.16503}
+  },
+  "Open": {
+    "Thumb":  {"1Stretched": -1.08768, "Spread": -0.09247, "2Stretched": 0.31147,  "3Stretched": 0.79167},
+    "Index":  {"1Stretched": 0.51432,  "Spread": -0.1497,  "2Stretched": 0.80334,  "3Stretched": 0.80334},
+    "Middle": {"1Stretched": 0.55525,  "Spread": -0.51435, "2Stretched": 0.81039,  "3Stretched": 0.81039},
+    "Ring":   {"1Stretched": 0.413,    "Spread": 0.12791,  "2Stretched": 0.81164,  "3Stretched": 0.81164},
+    "Little": {"1Stretched": 0.33591,  "Spread": -0.0533,  "2Stretched": 0.82372,  "3Stretched": 0.80936}
+  },
+  "Open_Index": {
+    "Thumb":  {"1Stretched": -2.04098, "Spread": -0.60678, "2Stretched": -0.32929, "3Stretched": -1.33153},
+    "Index":  {"1Stretched": 0.75,     "Spread": -0.1497,  "2Stretched": 0.95,     "3Stretched": 0.9},
+    "Middle": {"1Stretched": -0.81425, "Spread": -0.39926, "2Stretched": -1.00634, "3Stretched": -1.57105},
+    "Ring":   {"1Stretched": -0.90907, "Spread": -1.87203, "2Stretched": -0.96155, "3Stretched": -1.29636},
+    "Little": {"1Stretched": -0.9151,  "Spread": -1.33342, "2Stretched": -0.76356, "3Stretched": -1.16503}
+  },
+  "Open_V": {
+    "Thumb":  {"1Stretched": -2.20658, "Spread": -0.74209, "2Stretched": -0.55309, "3Stretched": -1.30655},
+    "Index":  {"1Stretched": 0.52885,  "Spread": 0.58602,  "2Stretched": 0.81278,  "3Stretched": 0.80241},
+    "Middle": {"1Stretched": 0.55525,  "Spread": -0.51434, "2Stretched": 0.8158,   "3Stretched": 0.80764},
+    "Ring":   {"1Stretched": -0.75605, "Spread": -2.31078, "2Stretched": -0.96155, "3Stretched": -0.26195},
+    "Little": {"1Stretched": -0.89976, "Spread": -1.50285, "2Stretched": -0.88734, "3Stretched": -0.03343}
+  },
+  "Gao": {
+    "Thumb":  {"1Stretched": -0.65056, "Spread": 0.02776,  "2Stretched": 0.79311,  "3Stretched": -1.13134},
+    "Index":  {"1Stretched": 1.00298,  "Spread": 0.10688,  "2Stretched": -0.40716, "3Stretched": -0.32847},
+    "Middle": {"1Stretched": 1.24038,  "Spread": -0.6644,  "2Stretched": -0.56189, "3Stretched": -0.34746},
+    "Ring":   {"1Stretched": 1.0004,   "Spread": 1.06406,  "2Stretched": -0.51481, "3Stretched": -0.78559},
+    "Little": {"1Stretched": 0.84586,  "Spread": 0.76514,  "2Stretched": -0.44615, "3Stretched": -0.72314}
+  },
+  "Good": {
+    "Thumb":  {"1Stretched": -0.50316, "Spread": -0.30681, "2Stretched": 0.51799,  "3Stretched": 1.37037},
+    "Index":  {"1Stretched": -0.58494, "Spread": -0.2332,  "2Stretched": -1.00659, "3Stretched": -1.45827},
+    "Middle": {"1Stretched": -0.55201, "Spread": 0.65507,  "2Stretched": -1.00634, "3Stretched": -1.34872},
+    "Ring":   {"1Stretched": -0.75605, "Spread": -2.31078, "2Stretched": -0.96155, "3Stretched": -1.29636},
+    "Little": {"1Stretched": -0.89976, "Spread": -1.50285, "2Stretched": -0.88734, "3Stretched": -1.14218}
+  }
+}
