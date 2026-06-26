@@ -4781,7 +4781,11 @@ function enterHandFocus(side) {
     const b = handFocusBones(side);
     if (!b) { showToast("手のボーンが見つかりません", "error", 2000); return; }
     handFocusSide = side;
-    _handFocusSaved = { camPos: camera.position.clone(), target: orbit.target.clone(), prevBoneEdit: boneEditEnabled };
+    // 対象外モデルはフォーカス中だけ非表示にする（クリップ平面はアクティブモデルの
+    // 手首基準なので、他モデルが切り残されて見えてしまうのを防ぐ）。
+    const modelVis = loadedModels.map((e) => [e.root, e.root.visible]);
+    for (const e of loadedModels) e.root.visible = (e.root === modelRoot);
+    _handFocusSaved = { camPos: camera.position.clone(), target: orbit.target.clone(), prevBoneEdit: boneEditEnabled, modelVis };
     handFocusActive = true;
     setBoneEdit(true);                       // 指の制御点を表示（focus分岐で指のみ表示）
     // 制御点が近接カメラで大きく見えるので、フォーカス中の指/手首ハンドルは縮小
@@ -4812,6 +4816,10 @@ function exitHandFocus() {
         orbit.target.copy(_handFocusSaved.target);
         orbit.update();
         setBoneEdit(_handFocusSaved.prevBoneEdit);
+        // フォーカス前のモデル表示状態を復元（入室時に隠した対象外モデルを戻す）。
+        if (_handFocusSaved.modelVis) {
+            for (const [root, vis] of _handFocusSaved.modelVis) root.visible = vis;
+        }
         _handFocusSaved = null;
     }
     handFocusSide = null;
