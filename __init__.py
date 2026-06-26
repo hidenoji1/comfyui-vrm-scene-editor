@@ -7,6 +7,11 @@ VRM / GLB / GLTF model with three.js + @pixiv/three-vrm.
 Routes:
   GET  /vrm-scene-editor          -> editor/index.html
   GET  /vrm-scene-editor-assets/* -> static files under editor/ (JS, vendor libs)
+  GET  /vrm-scene-models/*        -> static files under models/ (user VRM library)
+  GET  /vrm-scene-editor/models   -> list of VRM/GLB files in models/vrm
+  GET  /vrm-scene-editor/thumbnail?file=X -> a VRM's embedded thumbnail image
+  POST /vrm-scene-editor/save-thumbnail   -> save a rendered <name>.png next to a model
+  POST /vrm-scene-editor/save-scene       -> save models/scene/<name>.json + .png thumbnail
   POST /vrm-scene-editor/capture  -> save {camera}_{type}.png + register it
   GET  /vrm-scene-editor/default-folder -> the default output folder path
   GET  /vrm-scene-editor/channels -> list of registered camera/type captures
@@ -19,7 +24,9 @@ Graph node:
 import base64
 import binascii
 import datetime
+import json
 import re
+import struct
 import time
 from pathlib import Path
 
@@ -35,18 +42,106 @@ VRM_SCENE_EDITOR_ASSETS_PATH = "/vrm-scene-editor-assets"
 _EDITOR_DIR = Path(__file__).parent / "editor"
 _INDEX_HTML = _EDITOR_DIR / "index.html"
 
-# Bundled pose files (VRoid Studio *.vroidpose / *.json) the editor can load.
-_POSE_DIR = Path(__file__).parent / "pose"
+# User asset library under models/. Drop VRM/GLB files into models/vrm to load
+# them from the editor; the sibling folders hold poses / hand poses / scenes.
+_MODELS_DIR = Path(__file__).parent / "models"
+_MODEL_SUBDIRS = ("vrm", "pose", "hand_pose", "scene")
+_MODEL_LIB_DIR = _MODELS_DIR / "vrm"
+_SCENE_DIR = _MODELS_DIR / "scene"
+# Pose files (VRoid Studio *.vroidpose / *.json) live under models/pose so their
+# thumbnails are served by the same /vrm-scene-models static mount.
+_POSE_DIR = _MODELS_DIR / "pose"
 _POSE_EXTS = (".vroidpose", ".json")
+_MODEL_EXTS = (".vrm", ".glb", ".gltf")
+_MODELS_ASSETS_PATH = "/vrm-scene-models"
+
+
+def _ensure_model_dirs():
+    """Create models/ and its category subfolders if they don't exist yet."""
+    for sub in _MODEL_SUBDIRS:
+        try:
+            (_MODELS_DIR / sub).mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            print(f"{_LOG_PREFIX} could not create models/{sub}: {exc}")
+
+
+_GLB_MAGIC = b"glTF"
+_GLB_CHUNK_JSON = 0x4E4F534A  # "JSON"
+_GLB_CHUNK_BIN = 0x004E4942   # "BIN\0"
+
+
+def _extract_vrm_thumbnail(path: Path):
+    """Return (image_bytes, mime) of a VRM's embedded thumbnail, or None.
+
+    VRM1 stores meta.thumbnailImage (image index); VRM0 stores meta.texture
+    (texture index -> textures[].source). The image lives in the GLB BIN chunk
+    via a bufferView. Reads only the header + JSON + the thumbnail bytes.
+    """
+    try:
+        with path.open("rb") as f:
+            header = f.read(12)
+            if len(header) < 12 or header[:4] != _GLB_MAGIC:
+                return None  # not a binary glTF (e.g. a .gltf text file)
+            ch = f.read(8)
+            if len(ch) < 8:
+                return None
+            clen, ctype = struct.unpack("<II", ch)
+            if ctype != _GLB_CHUNK_JSON:
+                return None
+            gltf = json.loads(f.read(clen).decode("utf-8"))
+            ch2 = f.read(8)
+            if len(ch2) < 8:
+                return None
+            _blen, btype = struct.unpack("<II", ch2)
+            if btype != _GLB_CHUNK_BIN:
+                return None
+            bin_start = f.tell()
+
+            ext = gltf.get("extensions", {}) or {}
+            img_idx = None
+            meta1 = (ext.get("VRMC_vrm") or {}).get("meta")
+            if meta1 and isinstance(meta1.get("thumbnailImage"), int):
+                img_idx = meta1["thumbnailImage"]
+            else:
+                meta0 = (ext.get("VRM") or {}).get("meta")
+                tex = meta0.get("texture") if meta0 else None
+                if isinstance(tex, int) and tex >= 0:
+                    textures = gltf.get("textures", [])
+                    if 0 <= tex < len(textures):
+                        img_idx = textures[tex].get("source")
+            if not isinstance(img_idx, int):
+                return None
+
+            images = gltf.get("images", [])
+            if not (0 <= img_idx < len(images)):
+                return None
+            image = images[img_idx]
+            bv_idx = image.get("bufferView")
+            if not isinstance(bv_idx, int):
+                return None  # external-URI images not supported
+            bvs = gltf.get("bufferViews", [])
+            if not (0 <= bv_idx < len(bvs)):
+                return None
+            bv = bvs[bv_idx]
+            f.seek(bin_start + bv.get("byteOffset", 0))
+            img_bytes = f.read(bv.get("byteLength", 0))
+            if not img_bytes:
+                return None
+            return img_bytes, image.get("mimeType", "image/png")
+    except (OSError, ValueError, KeyError, struct.error):
+        return None
 
 # data:image/png;base64,.... prefix that browsers prepend to canvas.toDataURL().
-_DATA_URL_RE = re.compile(r"^data:image/png;base64,", re.IGNORECASE)
+_DATA_URL_RE = re.compile(r"^data:image/[a-z0-9.+-]+;base64,", re.IGNORECASE)
 
 # Filename-safe token: keep letters/digits/_/-, collapse everything else to "_".
 _UNSAFE_RE = re.compile(r"[^A-Za-z0-9_\-]+")
 
 # Image types a camera can render. canny/openpose come later.
-CAPTURE_TYPES = ["image", "mask", "mask(hands)", "depth", "normal", "openpose(body)", "openpose(hands)", "openpose(body+hands)"]
+CAPTURE_TYPES = ["image", "mask", "mask(hands)", "seg", "depth", "normal", "openpose(body)", "openpose(hands)", "openpose(body+hands)"]
+
+# Cameras the node can switch between (camera1 .. camera9).
+CAMERAS = [f"camera{i}" for i in range(1, 10)]
 
 # In-process registry of the latest capture per (camera, type), shared between
 # the HTTP route (writer) and the graph node (reader) -- same process.
@@ -110,6 +205,8 @@ def _register_routes():
         print(f"{_LOG_PREFIX} PromptServer.instance is None, routes NOT registered")
         return
 
+    _ensure_model_dirs()  # make models/vrm etc. before the static route binds
+
     @instance.routes.get(VRM_SCENE_EDITOR_PATH)
     async def _vrm_scene_editor_page(_request):
         if not _INDEX_HTML.exists():
@@ -123,21 +220,231 @@ def _register_routes():
     @instance.routes.get(VRM_SCENE_EDITOR_PATH + "/channels")
     async def _vrm_scene_editor_channels(_request):
         channels = [
-            {"camera": cam, "type": t, "path": entry["path"], "token": entry["token"]}
+            {"camera": cam, "type": t, "path": entry["path"], "token": entry["token"], "preview": entry.get("preview")}
             for cam, types in _REGISTRY.items()
             for t, entry in types.items()
         ]
         return web.json_response({"channels": channels})
 
+    @instance.routes.get(VRM_SCENE_EDITOR_PATH + "/models")
+    async def _vrm_scene_editor_models(_request):
+        """List the VRM/GLB/GLTF files the user dropped into models/vrm."""
+        models = []
+        if _MODEL_LIB_DIR.is_dir():
+            for p in sorted(_MODEL_LIB_DIR.iterdir()):
+                if p.is_file() and p.suffix.lower() in _MODEL_EXTS:
+                    png = p.with_suffix(".png")  # saved render thumbnail (same name, .png)
+                    models.append({
+                        "name": p.stem, "file": p.name, "ext": p.suffix.lower(),
+                        "thumb": png.name if png.is_file() else None,
+                    })
+        return web.json_response({"models": models, "dir": str(_MODEL_LIB_DIR)})
+
+    @instance.routes.post(VRM_SCENE_EDITOR_PATH + "/save-thumbnail")
+    async def _vrm_scene_editor_save_thumbnail(request):
+        """Save a rendered thumbnail next to its model as <name>.png for reuse."""
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        name = data.get("file", "")
+        image = data.get("image", "")
+        if not name or "/" in name or "\\" in name:
+            return web.json_response({"error": "invalid file name"}, status=400)
+        if Path(name).suffix.lower() not in _MODEL_EXTS:
+            return web.json_response({"error": "unsupported extension"}, status=400)
+        if not isinstance(image, str) or not image:
+            return web.json_response({"error": "missing image data"}, status=400)
+        out = _MODEL_LIB_DIR / (Path(name).stem + ".png")
+        try:
+            out.resolve().relative_to(_MODEL_LIB_DIR.resolve())
+        except ValueError:
+            return web.json_response({"error": "access denied"}, status=403)
+        try:
+            png_bytes = base64.b64decode(_DATA_URL_RE.sub("", image), validate=True)
+        except (binascii.Error, ValueError):
+            return web.json_response({"error": "image is not valid base64 PNG"}, status=400)
+        try:
+            out.write_bytes(png_bytes)
+        except OSError as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+        return web.json_response({"ok": True, "thumb": out.name})
+
+    @instance.routes.get(VRM_SCENE_EDITOR_PATH + "/thumbnail")
+    async def _vrm_scene_editor_thumbnail(request):
+        """Return the embedded thumbnail of one VRM in models/vrm (404 if none)."""
+        name = request.rel_url.query.get("file", "")
+        if not name or "/" in name or "\\" in name:
+            return web.Response(status=400, text="invalid file name")
+        if Path(name).suffix.lower() not in _MODEL_EXTS:
+            return web.Response(status=400, text="unsupported extension")
+        p = _MODEL_LIB_DIR / name
+        try:
+            p.resolve().relative_to(_MODEL_LIB_DIR.resolve())
+        except ValueError:
+            return web.Response(status=403, text="access denied")
+        if not p.is_file():
+            return web.Response(status=404, text="not found")
+        thumb = _extract_vrm_thumbnail(p)
+        if not thumb:
+            return web.Response(status=404, text="no thumbnail")
+        img_bytes, mime = thumb
+        return web.Response(body=img_bytes, content_type=mime)
+
+    @instance.routes.post(VRM_SCENE_EDITOR_PATH + "/save-scene")
+    async def _vrm_scene_editor_save_scene(request):
+        """Save a scene as models/scene/<name>.json (+ <name>.png thumbnail)."""
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        name = (payload.get("name") or "").strip()
+        if not name or "/" in name or "\\" in name or name.startswith("."):
+            return web.json_response({"error": "invalid scene name"}, status=400)
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            return web.json_response({"error": "missing scene data"}, status=400)
+        _ensure_model_dirs()
+        scene_dir = _MODELS_DIR / "scene"
+        json_path = scene_dir / (name + ".json")
+        try:
+            json_path.resolve().relative_to(scene_dir.resolve())
+        except ValueError:
+            return web.json_response({"error": "access denied"}, status=403)
+        try:
+            json_path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+            thumb = payload.get("thumbnail")
+            if isinstance(thumb, str) and thumb:
+                png = base64.b64decode(_DATA_URL_RE.sub("", thumb), validate=True)
+                (scene_dir / (name + ".png")).write_bytes(png)
+        except (OSError, binascii.Error, ValueError) as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+        return web.json_response({"ok": True, "name": name})
+
+    @instance.routes.get(VRM_SCENE_EDITOR_PATH + "/scenes")
+    async def _vrm_scene_editor_scenes(_request):
+        """List saved scenes in models/scene (<name>.json, optional <name>.png thumbnail)."""
+        scenes = []
+        if _SCENE_DIR.is_dir():
+            for p in sorted(_SCENE_DIR.iterdir()):
+                if p.is_file() and p.suffix.lower() == ".json":
+                    png = p.with_suffix(".png")
+                    scenes.append({
+                        "name": p.stem, "file": p.name,
+                        "thumb": png.name if png.is_file() else None,
+                        "mtime": p.stat().st_mtime,
+                    })
+            scenes.sort(key=lambda s: s["mtime"], reverse=True)  # newest first
+        return web.json_response({"scenes": scenes, "dir": str(_SCENE_DIR)})
+
+    @instance.routes.post(VRM_SCENE_EDITOR_PATH + "/delete-scene")
+    async def _vrm_scene_editor_delete_scene(request):
+        """Delete a saved scene (models/scene/<name>.json and its .png thumbnail)."""
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        name = (payload.get("file") or payload.get("name") or "").strip()
+        if not name or "/" in name or "\\" in name or name.startswith("."):
+            return web.json_response({"error": "invalid scene name"}, status=400)
+        stem = Path(name).stem  # accept "<name>" or "<name>.json"
+        try:
+            for suffix in (".json", ".png"):
+                p = _SCENE_DIR / (stem + suffix)
+                p.resolve().relative_to(_SCENE_DIR.resolve())
+                if p.is_file():
+                    p.unlink()
+        except ValueError:
+            return web.json_response({"error": "access denied"}, status=403)
+        except OSError as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+        return web.json_response({"ok": True, "name": stem})
+
+    @instance.routes.get(VRM_SCENE_EDITOR_PATH + "/scene")
+    async def _vrm_scene_editor_scene(request):
+        """Return one saved scene's JSON from models/scene (no path traversal)."""
+        name = request.rel_url.query.get("file", "")
+        if not name or "/" in name or "\\" in name:
+            return web.json_response({"error": "invalid file name"}, status=400)
+        if Path(name).suffix.lower() != ".json":
+            return web.json_response({"error": "unsupported extension"}, status=400)
+        p = _SCENE_DIR / name
+        try:
+            p.resolve().relative_to(_SCENE_DIR.resolve())
+        except ValueError:
+            return web.json_response({"error": "access denied"}, status=403)
+        if not p.is_file():
+            return web.json_response({"error": "file not found"}, status=404)
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+        return web.Response(text=text, content_type="application/json")
+
     @instance.routes.get(VRM_SCENE_EDITOR_PATH + "/poses")
     async def _vrm_scene_editor_poses(_request):
-        """List the pose files (*.vroidpose / *.json) bundled in pose/."""
+        """List pose files (*.vroidpose / *.json) in models/pose, with thumbnail name if present."""
         poses = []
         if _POSE_DIR.is_dir():
             for p in sorted(_POSE_DIR.iterdir()):
                 if p.is_file() and p.suffix.lower() in _POSE_EXTS:
-                    poses.append({"name": p.stem, "file": p.name, "ext": p.suffix.lower()})
+                    png = p.with_suffix(".png")  # saved pose thumbnail (same stem, .png)
+                    poses.append({
+                        "name": p.stem, "file": p.name, "ext": p.suffix.lower(),
+                        "thumb": png.name if png.is_file() else None,
+                    })
         return web.json_response({"poses": poses, "dir": str(_POSE_DIR)})
+
+    @instance.routes.post(VRM_SCENE_EDITOR_PATH + "/save-pose-thumbnail")
+    async def _vrm_scene_editor_save_pose_thumbnail(request):
+        """Save a rendered pose thumbnail next to its pose file as <name>.png."""
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        name = data.get("file", "")
+        image = data.get("image", "")
+        if not name or "/" in name or "\\" in name:
+            return web.json_response({"error": "invalid file name"}, status=400)
+        if Path(name).suffix.lower() not in _POSE_EXTS:
+            return web.json_response({"error": "unsupported extension"}, status=400)
+        if not isinstance(image, str) or not image:
+            return web.json_response({"error": "missing image data"}, status=400)
+        out = _POSE_DIR / (Path(name).stem + ".png")
+        try:
+            out.resolve().relative_to(_POSE_DIR.resolve())
+        except ValueError:
+            return web.json_response({"error": "access denied"}, status=403)
+        try:
+            png_bytes = base64.b64decode(_DATA_URL_RE.sub("", image), validate=True)
+            out.write_bytes(png_bytes)
+        except (OSError, binascii.Error, ValueError) as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+        return web.json_response({"ok": True, "thumb": out.name})
+
+    @instance.routes.post(VRM_SCENE_EDITOR_PATH + "/delete-pose")
+    async def _vrm_scene_editor_delete_pose(request):
+        """Delete a pose file in models/pose (and its .png thumbnail)."""
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        name = (data.get("file") or "").strip()
+        if not name or "/" in name or "\\" in name or name.startswith("."):
+            return web.json_response({"error": "invalid file name"}, status=400)
+        if Path(name).suffix.lower() not in _POSE_EXTS:
+            return web.json_response({"error": "unsupported extension"}, status=400)
+        stem = Path(name).stem
+        try:
+            for path in (_POSE_DIR / name, _POSE_DIR / (stem + ".png")):
+                path.resolve().relative_to(_POSE_DIR.resolve())
+                if path.is_file():
+                    path.unlink()
+        except ValueError:
+            return web.json_response({"error": "access denied"}, status=403)
+        except OSError as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+        return web.json_response({"ok": True, "name": stem})
 
     @instance.routes.get(VRM_SCENE_EDITOR_PATH + "/pose")
     async def _vrm_scene_editor_pose(request):
@@ -237,8 +544,10 @@ def _register_routes():
     # Serve main.js, vendor/, utils/ as static files. Relative imports inside
     # the JS modules resolve correctly under this prefix.
     instance.routes.static(VRM_SCENE_EDITOR_ASSETS_PATH, str(_EDITOR_DIR))
+    # Serve the user model library (models/) so the editor can load by URL.
+    instance.routes.static(_MODELS_ASSETS_PATH, str(_MODELS_DIR))
 
-    print(f"{_LOG_PREFIX} routes registered (page, capture, channels, poses) at {VRM_SCENE_EDITOR_PATH}")
+    print(f"{_LOG_PREFIX} routes registered (page, capture, channels, poses, models) at {VRM_SCENE_EDITOR_PATH}")
 
 
 _register_routes()
@@ -257,7 +566,7 @@ class VRMSceneCapture:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "camera": ("STRING", {"default": "camera1"}),
+                "camera": (CAMERAS, {"default": "camera1"}),
                 "type": (CAPTURE_TYPES, {"default": "image"}),
             },
         }
@@ -277,8 +586,9 @@ class VRMSceneCapture:
     @classmethod
     def IS_CHANGED(cls, camera, type):
         entry, _cam, _typ = cls._lookup(camera, type)
-        # No match -> NaN forces a re-run (and the clear error below) every time.
-        return entry["token"] if entry else float("nan")
+        # token changes per capture -> re-run; "none" is stable so an empty
+        # camera/type doesn't force endless re-runs.
+        return entry["token"] if entry else "none"
 
     def load(self, camera, type):
         import numpy as np
@@ -286,15 +596,11 @@ class VRMSceneCapture:
         from PIL import Image, ImageOps
 
         entry, cam, typ = self._lookup(camera, type)
-        if not entry:
-            raise RuntimeError(
-                f"VRM Scene Capture: no capture for camera='{cam}', type='{typ}'. "
-                f"VRMシーンエディタで該当カメラ/タイプを撮影してください。"
-            )
-
-        path = entry["path"]
-        if not Path(path).is_file():
-            raise FileNotFoundError(f"VRM Scene Capture: file missing: {path}")
+        path = entry.get("path") if entry else None
+        # 切り替え先に撮影画像が無い -> エラーにせず空(黒)画像を返し、プレビューも空にする。
+        if not entry or not path or not Path(path).is_file():
+            empty = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+            return {"ui": {"images": []}, "result": (empty, "")}
 
         img = ImageOps.exif_transpose(Image.open(path))
 

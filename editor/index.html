@@ -70,8 +70,8 @@
         #toolbar .tb-menu button:hover { background: #3a6ea5; color: #fff; }
         #toolbar .tb-menu button:disabled { color: #777; cursor: not-allowed; }
         #toolbar .tb-menu button:disabled:hover { background: transparent; color: #777; }
-        /* push 撮影 + ヘルプ + ⚙設定 as a group to the far right (left→right: 撮影, ヘルプ, 設定) */
-        #capture-btn { margin-left: auto; }
+        /* push シーン保存 + 撮影 + ヘルプ + ⚙設定 as a group to the far right */
+        #capture-btn { margin-left: auto; } /* 右寄せ（シーン保存ボタン非表示のため撮影に移譲） */
         #settings-panel {
             position: absolute;
             top: 48px;
@@ -79,7 +79,8 @@
             z-index: 10;
             width: 240px;
             max-height: calc(100vh - 60px);
-            overflow-y: auto;
+            overflow: auto;
+            resize: both; min-width: 200px; min-height: 160px; max-width: 90vw;
             background: #2c2c2c;
             border: 1px solid #444;
             border-radius: 6px;
@@ -135,6 +136,54 @@
         }
         #settings-panel .check-row input { accent-color: #236692; }
         #settings-panel hr { border: none; border-top: 1px solid #3c3c3c; margin: 12px 0; }
+        /* カメラ設定ウィンドウ */
+        #camera-panel { position: fixed; left: 12px; top: 96px; z-index: 9; width: 360px; min-width: 260px; min-height: 180px; max-width: 90vw; max-height: 90vh; resize: both; overflow: hidden; display: flex; flex-direction: column; background: #2c2c2c; border: 1px solid #444; border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.5); color: #e6e6e6; }
+        #camera-panel[hidden] { display: none; }
+        #camera-panel .cam-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+        #camera-panel .ep-title { flex: 0 0 auto; font-size: 13px; color: #cfcfcf; cursor: move; user-select: none; padding: 6px 10px; background: #383838; border-bottom: 1px solid #4a4a4a; border-radius: 6px 6px 0 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        #camera-panel .ep-title button { background: none; border: none; color: #cfcfcf; cursor: pointer; font-size: 16px; line-height: 1; padding: 0 4px; border-radius: 3px; }
+        #camera-panel .ep-title button:hover { background: #c0392b; color: #fff; }
+        #camera-panel .cam-body { padding: 9px 10px; display: flex; flex-direction: column; gap: 8px; }
+        #camera-panel .cam-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+        #camera-panel .cam-row > label { flex: 0 0 auto; width: 72px; color: #cfcfcf; }
+        #camera-panel select { flex: 1 1 auto; min-width: 0; background: #1e1e1e; color: #e6e6e6; border: 1px solid #444; border-radius: 4px; padding: 3px 5px; font-size: 12px; }
+        /* ボーンツリー窓: アクティブモデルのボーン階層＋回転(度) */
+        /* 配置モデル＋ボーンツリーを1つにまとめたウィンドウ */
+        #scene-panel { position: fixed; left: 12px; top: 96px; z-index: 9; width: 320px; height: 480px; min-width: 220px; min-height: 240px; max-width: 90vw; max-height: 90vh; resize: both; overflow: hidden; display: flex; flex-direction: column; background: #2c2c2c; border: 1px solid #444; border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.5); color: #e6e6e6; }
+        #scene-panel[hidden] { display: none; }
+        #scene-panel .ep-title { flex: 0 0 auto; font-size: 13px; color: #cfcfcf; cursor: move; user-select: none; padding: 6px 10px; background: #383838; border-bottom: 1px solid #4a4a4a; border-radius: 6px 6px 0 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        #scene-panel .ep-title .pl-title-btns { display: flex; align-items: center; gap: 4px; }
+        #scene-panel .ep-title button { background: none; border: none; color: #cfcfcf; cursor: pointer; font-size: 15px; line-height: 1; padding: 0 4px; border-radius: 3px; }
+        #scene-panel .ep-title #bone-tree-reload:hover { background: #2f6e3a; color: #fff; }
+        #scene-panel .ep-title #scene-panel-close:hover { background: #c0392b; color: #fff; }
+        #scene-panel .sp-head { flex: 0 0 auto; font-size: 11px; color: #9aa7b3; padding: 4px 10px 2px; background: #313131; border-bottom: 1px solid #3a3a3a; }
+        #scene-panel .sp-models { flex: 0 0 auto; display: flex; flex-direction: column; }
+        #scene-panel .sp-tree { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid #444; }
+        /* thin status bar at the bottom -> the resize grip sits here (not over the tree scrollbar) */
+        #scene-panel .sp-status { flex: 0 0 auto; font-size: 10px; color: #8a8a8a; padding: 3px 16px 3px 10px; background: #313131; border-top: 1px solid #4a4a4a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        #bone-tree-body { flex: 1 1 auto; overflow: auto; padding: 6px 8px; font-size: 11px; line-height: 1.5; }
+        #bone-tree-body ul { list-style: none; margin: 0; padding-left: 14px; }
+        #bone-tree-body > ul { padding-left: 2px; }
+        #bone-tree-body .bt-row { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; cursor: default; }
+        #bone-tree-body .bt-tog { width: 12px; flex: 0 0 auto; color: #8aa; cursor: pointer; user-select: none; text-align: center; }
+        #bone-tree-body .bt-name { color: #e6e6e6; }
+        #bone-tree-body .bt-val { color: #7a8aaa; }
+        #bone-tree-body .bt-empty { color: #888; padding: 8px 4px; }
+        #bone-tree-body li.collapsed > ul { display: none; }
+        #bone-tree-body .bt-lock { flex: 0 0 auto; width: 12px; height: 12px; margin: 0; accent-color: #236692; cursor: pointer; }
+        #bone-tree-body .bt-lock-spacer { flex: 0 0 auto; width: 12px; }
+        #bone-tree-body .bt-name.bt-sel { cursor: pointer; }
+        #bone-tree-body .bt-name.bt-sel:hover { color: #6cb6ff; }
+        #bone-tree-body .bt-row.bt-active .bt-name { color: #6cb6ff; font-weight: bold; }
+        #bone-tree-body .bt-name.bt-root { color: #cfcfcf; font-weight: bold; }
+        /* カメラの「含めるモデル」チェック群 */
+        #camera-models, #camera-types { max-height: 120px; overflow-y: auto; border: 1px solid #3c3c3c; border-radius: 4px; padding: 4px 6px; }
+        #camera-types { max-height: 150px; }
+        #camera-models .cam-empty, #camera-types .cam-empty { color: #888; font-size: 11px; padding: 4px 2px; }
+        #camera-models label, #camera-types label { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 2px 0; cursor: pointer; }
+        #camera-models input, #camera-types input { accent-color: #236692; }
+        #camera-panel .cam-check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #cfcfcf; cursor: pointer; padding: 2px 0; }
+        #camera-panel .cam-check input { accent-color: #236692; }
         #viewport {
             flex: 1 1 auto;
             position: relative;
@@ -157,7 +206,41 @@
             white-space: nowrap;
         }
         #app-badge .ver { color: rgba(108, 182, 255, 0.7); margin-left: 5px; }
-        #viewport canvas { display: block; width: 100%; height: 100%; }
+        #viewport canvas { display: block; width: 100%; height: 100%; position: relative; z-index: 1; }
+        /* 参照用の背景画像: モデル(canvas)の後ろ(z0)に敷く。pointer-events:none でカメラ操作を邪魔しない。 */
+        #ref-image {
+            position: absolute; inset: 0; z-index: 0;
+            width: 100%; height: 100%; object-fit: contain;
+            opacity: 0.5; pointer-events: none; user-select: none;
+            transform-origin: center center; display: none;
+        }
+        /* 背景画像パネル */
+        #ref-panel {
+            position: fixed; left: 12px; top: 96px; z-index: 9; width: 226px;
+            min-width: 200px; min-height: 160px; max-width: 90vw; max-height: 90vh; resize: both; overflow: hidden;
+            display: flex; flex-direction: column;
+            background: #2c2c2c; border: 1px solid #444; border-radius: 6px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.5); color: #e6e6e6;
+        }
+        #ref-panel[hidden] { display: none; }
+        #ref-panel .rf-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+        #ref-panel .rf-title {
+            font-size: 13px; color: #cfcfcf; cursor: move; user-select: none;
+            padding: 6px 10px; background: #383838; border-bottom: 1px solid #4a4a4a; border-radius: 6px 6px 0 0;
+            display: flex; align-items: center; justify-content: space-between; gap: 10px;
+        }
+        #ref-panel .rf-title button { background: none; border: none; color: #cfcfcf; cursor: pointer; font-size: 16px; line-height: 1; padding: 0 4px; border-radius: 3px; }
+        #ref-panel .rf-title button:hover { background: #c0392b; color: #fff; }
+        #ref-panel .rf-body { padding: 9px 10px; display: flex; flex-direction: column; gap: 8px; }
+        #ref-panel .rf-btns { display: flex; gap: 6px; }
+        #ref-panel button.rf-act { flex: 1 1 auto; background: #1e1e1e; color: #e6e6e6; border: 1px solid #444; border-radius: 5px; padding: 5px 6px; font-size: 12px; cursor: pointer; }
+        #ref-panel button.rf-act:hover { border-color: #3485bb; }
+        #ref-panel .rf-check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #cfcfcf; cursor: pointer; }
+        #ref-panel .rf-check input { accent-color: #236692; }
+        #ref-panel .rf-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+        #ref-panel .rf-row > label { flex: 0 0 auto; width: 52px; color: #cfcfcf; }
+        #ref-panel .rf-row input[type=range] { flex: 1 1 auto; min-width: 0; accent-color: #236692; }
+        #ref-panel .rf-row .rf-val { flex: 0 0 auto; width: 34px; text-align: right; color: #9aa7b3; }
         /* Capture-frame guide: a centered square that dims everything outside it.
            Purely a visual overlay -- it is not part of the rendered PNG. */
         #capture-frame {
@@ -247,6 +330,7 @@
             border-radius: 6px;
             padding: 8px 10px;
             box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+            resize: both; overflow: auto; min-width: 180px; min-height: 130px; max-width: 90vw; max-height: 90vh;
         }
         #transform-panel .tp-title {
             font-size: 12px; color: #cfcfcf; cursor: move; user-select: none;
@@ -348,11 +432,13 @@
         /* Hand-pose panel — mirrors the 表情 floating panel (preset + weight per hand). */
         #hand-pose-panel {
             position: fixed; left: 12px; top: 96px; z-index: 9; width: 250px;
+            min-width: 210px; min-height: 160px; max-width: 90vw; max-height: 90vh; resize: both; overflow: hidden;
             display: flex; flex-direction: column;
             background: #2c2c2c; border: 1px solid #444; border-radius: 6px;
             box-shadow: 0 4px 16px rgba(0,0,0,0.5); color: #e6e6e6;
         }
         #hand-pose-panel[hidden] { display: none; }
+        #hand-pose-panel .hp-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
         #hand-pose-panel .ep-title {
             flex: 0 0 auto; font-size: 13px; color: #cfcfcf; cursor: move; user-select: none;
             padding: 6px 10px; background: #383838; border-bottom: 1px solid #4a4a4a; border-radius: 6px 6px 0 0;
@@ -372,9 +458,86 @@
         }
         #hand-pose-panel .hp-weight { flex: 1 1 auto; min-width: 0; }
         #hand-pose-panel .hp-sep { height: 1px; background: #3a3a3a; margin: 8px 0; }
+        #hand-pose-panel .hp-focus-btn { flex: 1 1 auto; background: #1e1e1e; color: #e6e6e6; border: 1px solid #555; border-radius: 5px; padding: 5px 6px; font-size: 12px; cursor: pointer; }
+        #hand-pose-panel .hp-focus-btn:hover { border-color: #4a90d9; background: #34506e; }
+        /* ハンドフォーカス終了バー（モード中のみ表示） */
+        #hand-focus-bar {
+            position: fixed; top: 56px; left: 50%; transform: translateX(-50%); z-index: 1001;
+            display: flex; align-items: center; gap: 12px;
+            background: rgba(35,102,146,0.95); color: #fff; border: 1px solid #4a90d9; border-radius: 8px;
+            padding: 6px 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.5); font-size: 13px;
+        }
+        #hand-focus-bar[hidden] { display: none; }
+        #hand-focus-bar button { background: #1e1e1e; color: #e6e6e6; border: 1px solid #6aa6d9; border-radius: 5px; padding: 4px 14px; font-size: 13px; cursor: pointer; }
+        #hand-focus-bar button:hover { background: #c0392b; border-color: #e05a48; }
+        /* ハンド編集パネル */
+        #hand-edit-panel {
+            position: fixed; left: 12px; top: 100px; z-index: 1001; width: 250px; height: 420px;
+            min-width: 210px; min-height: 200px; max-width: 90vw; max-height: 86vh; resize: both; overflow: hidden;
+            display: flex; flex-direction: column;
+            background: #2c2c2c; border: 1px solid #4a90d9; border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.5); color: #e6e6e6;
+        }
+        #hand-edit-panel[hidden] { display: none; }
+        #hand-edit-panel .he-title {
+            flex: 0 0 auto; font-size: 13px; color: #cfcfcf; cursor: move; user-select: none;
+            padding: 6px 10px; background: #2f5a7a; border-bottom: 1px solid #4a90d9; border-radius: 6px 6px 0 0;
+            display: flex; align-items: center; justify-content: space-between; gap: 10px;
+        }
+        #hand-edit-panel .he-title #hand-edit-reset { background: #1e1e1e; color: #e6e6e6; border: 1px solid #6aa6d9; border-radius: 4px; padding: 3px 12px; font-size: 13px; cursor: pointer; }
+        #hand-edit-panel .he-title #hand-edit-reset:hover { border-color: #4a90d9; background: #34506e; }
+        #hand-edit-panel .he-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px 10px; }
+        #hand-edit-panel .he-sec { font-size: 12px; color: #8fbfe0; margin: 8px 0 2px; border-bottom: 1px solid #3a3a3a; padding-bottom: 2px; }
+        #hand-edit-panel .he-sec:first-child { margin-top: 0; }
+        #hand-edit-panel .he-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+        #hand-edit-panel .he-label { flex: 0 0 64px; font-size: 12px; color: #cfcfcf; white-space: nowrap; }
+        #hand-edit-panel .he-range { flex: 1 1 auto; min-width: 0; accent-color: #4a90d9; }
+        #hand-edit-panel .he-num { flex: 0 0 38px; text-align: right; font-size: 12px; color: #9aa7b3; font-variant-numeric: tabular-nums; }
+        /* ハンドポーズパレット（右側・可変ウィンドウ） */
+        #hand-pose-palette {
+            position: fixed; right: 12px; top: 100px; z-index: 1001;
+            width: 330px; height: 360px; min-width: 130px; min-height: 200px; max-width: 90vw; max-height: 86vh;
+            resize: both; overflow: hidden;
+            display: flex; flex-direction: column;
+            background: #2c2c2c; border: 1px solid #4a90d9; border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.5); color: #e6e6e6;
+        }
+        #hand-pose-palette[hidden] { display: none; }
+        #hand-pose-palette .hpl-title {
+            flex: 0 0 auto; font-size: 13px; color: #cfcfcf; cursor: move; user-select: none;
+            padding: 6px 10px; background: #2f5a7a; border-bottom: 1px solid #4a90d9; border-radius: 6px 6px 0 0;
+        }
+        /* サムネは固定サイズ(96px正方)、幅に応じて列数が増える。スクロールは縦のみ。 */
+        #hand-pose-palette .hpl-grid {
+            flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 8px;
+            display: grid; grid-template-columns: repeat(auto-fill, 96px); justify-content: center; gap: 8px; align-content: start;
+        }
+        #hand-pose-palette .hpl-empty { grid-column: 1 / -1; color: #888; font-size: 12px; padding: 12px 4px; text-align: center; }
+        #hand-pose-palette .hpl-card {
+            display: flex; flex-direction: column; gap: 3px; padding: 3px; cursor: pointer; box-sizing: border-box;
+            background: #1f1f1f; color: #e6e6e6; border: 1px solid #4a4a4a; border-radius: 5px; text-align: center;
+        }
+        #hand-pose-palette .hpl-card:hover { background: #34506e; border-color: #4a90d9; }
+        #hand-pose-palette .hpl-card.selected { outline: 2px solid #4a90d9; outline-offset: -1px; border-color: #4a90d9; background: #27425e; }
+        #hand-pose-palette .hpl-thumb { width: 100%; aspect-ratio: 1 / 1; object-fit: contain; border-radius: 3px; background: #1a1a1a; display: block; }
+        #hand-pose-palette .hpl-name { font-size: 12px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        #hand-pose-palette .hpl-status {
+            flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+            padding: 5px 10px; background: #313131; border-top: 1px solid #4a4a4a; font-size: 12px; color: #9aa7b3;
+        }
+        #hand-pose-palette .hpl-status-btns { display: flex; gap: 6px; }
+        #hand-pose-palette .hpl-status-btns button { background: #1e1e1e; color: #e6e6e6; border: 1px solid #555; border-radius: 4px; padding: 4px 14px; font-size: 13px; cursor: pointer; }
+        #hand-pose-palette .hpl-status-btns #hpl-add:hover { border-color: #3485bb; background: #27425e; }
+        #hand-pose-palette .hpl-status-btns #hpl-del:hover { border-color: #e05a48; background: #c0392b; color: #fff; }
+        #hand-pose-palette .hpl-status-btns button:disabled { color: #666; border-color: #444; cursor: default; background: #1e1e1e; }
+        /* ポーズ名登録オーバーレイ */
+        #hand-pose-name-modal .modal { width: min(340px, 90vw); }
+        #hand-pose-name-modal .hpn-btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+        #hand-pose-name-modal .hpn-btns button { background: #1e1e1e; color: #e6e6e6; border: 1px solid #555; border-radius: 5px; padding: 6px 18px; font-size: 13px; cursor: pointer; }
+        #hand-pose-name-modal .hpn-btns button#hpn-ok { background: #236692; border-color: #3485bb; }
+        #hand-pose-name-modal .hpn-btns button:hover { border-color: #4a90d9; }
         /* Pose library panel — bundled *.vroidpose / *.json picker. */
         #pose-lib-panel {
             position: fixed; left: 12px; top: 96px; z-index: 9; width: 250px;
+            min-width: 210px; min-height: 180px; max-width: 90vw; max-height: 90vh; resize: both; overflow: hidden;
             display: flex; flex-direction: column;
             background: #2c2c2c; border: 1px solid #444; border-radius: 6px;
             box-shadow: 0 4px 16px rgba(0,0,0,0.5); color: #e6e6e6;
@@ -385,23 +548,78 @@
             padding: 6px 10px; background: #383838; border-bottom: 1px solid #4a4a4a; border-radius: 6px 6px 0 0;
             display: flex; align-items: center; justify-content: space-between; gap: 10px;
         }
-        #pose-lib-panel .ep-title .pl-title-btns { display: flex; align-items: center; gap: 4px; }
-        #pose-lib-panel .ep-title button {
-            background: none; border: none; color: #cfcfcf; cursor: pointer;
-            font-size: 15px; line-height: 1; padding: 0 4px; border-radius: 3px;
-        }
-        #pose-lib-panel .ep-title #pose-lib-reload:hover { background: #2f6e3a; color: #fff; }
+        #pose-lib-panel .ep-title button { background: none; border: none; color: #cfcfcf; cursor: pointer; font-size: 15px; line-height: 1; padding: 0 4px; border-radius: 3px; }
         #pose-lib-panel .ep-title #pose-lib-close:hover { background: #c0392b; color: #fff; }
-        #pose-lib-panel .pl-body { padding: 6px; max-height: 50vh; overflow-y: auto; }
-        #pose-lib-panel .pl-item {
-            display: block; width: 100%; text-align: left; box-sizing: border-box;
-            background: #1f1f1f; color: #e6e6e6; border: 1px solid #4a4a4a; border-radius: 4px;
-            padding: 6px 9px; margin: 4px 0; font-size: 12px; cursor: pointer;
-            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        /* サムネは固定サイズ(96px正方)、幅に応じて列数が増える。スクロールは縦のみ。 */
+        #pose-lib-panel .plib-grid {
+            flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 8px;
+            display: grid; grid-template-columns: repeat(auto-fill, 96px); justify-content: center; gap: 8px; align-content: start;
         }
-        #pose-lib-panel .pl-item:hover { background: #34506e; border-color: #4a90d9; }
-        #pose-lib-panel .pl-item .pl-ext { color: #7a8aaa; font-size: 10px; margin-left: 6px; }
-        #pose-lib-panel .pl-empty { color: #888; font-size: 11px; padding: 10px 6px; text-align: center; }
+        #pose-lib-panel .plib-empty { grid-column: 1 / -1; color: #888; font-size: 12px; padding: 12px 4px; text-align: center; }
+        #pose-lib-panel .plib-card {
+            display: flex; flex-direction: column; gap: 3px; padding: 3px; cursor: pointer; box-sizing: border-box;
+            background: #1f1f1f; color: #e6e6e6; border: 1px solid #4a4a4a; border-radius: 5px; text-align: center;
+        }
+        #pose-lib-panel .plib-card:hover { background: #34506e; border-color: #4a90d9; }
+        #pose-lib-panel .plib-card.selected { outline: 2px solid #4a90d9; outline-offset: -1px; border-color: #4a90d9; background: #27425e; }
+        #pose-lib-panel .plib-thumb { width: 100%; aspect-ratio: 1 / 1; object-fit: contain; border-radius: 3px; background: #1a1a1a; display: block; }
+        #pose-lib-panel .plib-name { font-size: 12px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        #pose-lib-panel .plib-status {
+            flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+            padding: 5px 10px; background: #313131; border-top: 1px solid #4a4a4a; font-size: 12px; color: #9aa7b3;
+        }
+        #pose-lib-panel .plib-status-btns { display: flex; gap: 6px; }
+        #pose-lib-panel .plib-status-btns button { background: #1e1e1e; color: #e6e6e6; border: 1px solid #555; border-radius: 4px; padding: 4px 14px; font-size: 13px; cursor: pointer; }
+        #pose-lib-panel .plib-status-btns #pose-lib-reload:hover { border-color: #3485bb; background: #27425e; }
+        #pose-lib-panel .plib-status-btns #pose-lib-del:hover { border-color: #e05a48; background: #c0392b; color: #fff; }
+        #pose-lib-panel .plib-status-btns button:disabled { color: #666; border-color: #444; cursor: default; background: #1e1e1e; }
+        /* モデル読み込み（中央モーダル）— VRoid風のサムネイルカード一覧。 */
+        #model-modal .modal, #scene-modal .modal { width: min(760px, 92vw); height: min(560px, 86vh); }
+        #model-modal .modal-title .pl-title-btns, #scene-modal .modal-title .pl-title-btns { display: flex; align-items: center; gap: 4px; }
+        #model-modal .modal-title #model-reload, #scene-modal .modal-title #scene-reload { background: none; border: none; color: #cfcfcf; cursor: pointer; font-size: 16px; line-height: 1; padding: 0 5px; border-radius: 3px; }
+        #model-modal .modal-title #model-reload:hover, #scene-modal .modal-title #scene-reload:hover { background: #2f6e3a; color: #fff; }
+        #model-modal .ml-hint, #scene-modal .ml-hint { flex: 0 0 auto; font-size: 11px; color: #8a8a8a; padding: 8px 16px 0; }
+        /* 列数は可変: パネル幅に応じて 168px のカードを auto-fill。スクロールは縦のみ。 */
+        #model-modal .pl-body, #scene-modal .pl-body { flex: 1 1 auto; padding: 12px 16px; overflow-y: auto; overflow-x: hidden; display: grid; grid-template-columns: repeat(auto-fill, 168px); justify-content: center; gap: 10px; align-content: start; }
+        #model-modal .ml-card, #scene-modal .ml-card {
+            display: flex; flex-direction: column; gap: 4px; padding: 5px; cursor: pointer; box-sizing: border-box;
+            background: #1f1f1f; color: #e6e6e6; border: 1px solid #4a4a4a; border-radius: 5px; text-align: center;
+        }
+        #model-modal .ml-card:hover, #scene-modal .ml-card:hover { background: #34506e; border-color: #4a90d9; }
+        #model-modal .ml-thumb, #scene-modal .ml-thumb { width: 100%; aspect-ratio: 3 / 4; object-fit: contain; border-radius: 3px; background: #fff; display: block; }
+        #model-modal .ml-noimg, #scene-modal .ml-noimg { width: 100%; aspect-ratio: 3 / 4; border-radius: 3px; background: #2a2a2a; display: flex; align-items: center; justify-content: center; color: #777; font-size: 13px; letter-spacing: 0.5px; }
+        #model-modal .ml-name, #scene-modal .ml-name {
+            font-size: 11px; line-height: 1.2; word-break: break-all;
+            display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+        }
+        #model-modal .pl-empty, #scene-modal .pl-empty { grid-column: 1 / -1; color: #888; font-size: 11px; padding: 10px 6px; text-align: center; }
+        #model-modal .ml-foot, #scene-modal .ml-foot { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 16px 10px; border-top: 1px solid #3a3a3a; }
+        #model-modal .ml-foot-btns, #scene-modal .ml-foot-btns { display: flex; gap: 8px; }
+        #model-modal .ml-foot button, #scene-modal .ml-foot button { background: #1e1e1e; color: #e6e6e6; border: 1px solid #555; border-radius: 5px; padding: 6px 18px; font-size: 13px; cursor: pointer; }
+        #model-modal .ml-foot button#model-add, #scene-modal .ml-foot button#scene-load-ok { background: #236692; border-color: #3485bb; }
+        #model-modal .ml-foot button:hover, #scene-modal .ml-foot button:hover { border-color: #4a90d9; }
+        #model-modal .ml-foot button#model-add:disabled, #scene-modal .ml-foot button#scene-load-ok:disabled { background: #1e1e1e; border-color: #555; color: #777; cursor: default; }
+        #model-modal .ml-card.selected, #scene-modal .ml-card.selected { outline: 2px solid #4a90d9; outline-offset: -1px; border-color: #4a90d9; background: #27425e; }
+        #model-modal .ml-modecheck { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #cfcfcf; cursor: pointer; user-select: none; }
+        #model-modal .ml-modecheck input { accent-color: #236692; }
+        /* シーンカードは削除ボタンを重ねるためラッパーで包む */
+        #scene-modal .sc-card-wrap { position: relative; display: flex; }
+        #scene-modal .sc-card-wrap .ml-card { width: 100%; }
+        #scene-modal .sc-del {
+            position: absolute; top: 3px; right: 3px; width: 22px; height: 22px; padding: 0;
+            display: flex; align-items: center; justify-content: center; line-height: 1; font-size: 15px;
+            background: rgba(30,30,30,0.78); color: #e6e6e6; border: 1px solid #5a5a5a; border-radius: 4px; cursor: pointer;
+        }
+        #scene-modal .sc-del:hover { background: #c0392b; border-color: #e05a48; color: #fff; }
+        /* 配置モデル一覧パネル — シーン内のモデルを切替/削除。 */
+        #scene-panel .sm-body { padding: 6px; max-height: 30vh; overflow-y: auto; }
+        #scene-panel .sm-empty { color: #888; font-size: 11px; padding: 10px 6px; text-align: center; }
+        #scene-panel .sm-vis { flex: 0 0 auto; width: 13px; height: 13px; margin: 0 2px 0 6px; accent-color: #236692; cursor: pointer; }
+        #scene-panel .sm-row { display: flex; align-items: center; gap: 4px; margin: 3px 0; border: 1px solid #4a4a4a; border-radius: 4px; background: #1f1f1f; }
+        #scene-panel .sm-row.active { border-color: #4a90d9; background: #27425e; }
+        #scene-panel .sm-name { flex: 1 1 auto; min-width: 0; text-align: left; background: none; border: none; color: #e6e6e6; cursor: pointer; padding: 6px 8px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        #scene-panel .sm-del { flex: 0 0 auto; background: none; border: none; color: #c77; cursor: pointer; font-size: 13px; padding: 4px 8px; border-radius: 0 3px 3px 0; }
+        #scene-panel .sm-del:hover { color: #fff; background: #c0392b; }
         /* After-effects (bloom) panel — mirrors the 表情 floating panel. */
         #fx-panel { position: fixed; left: 12px; top: 96px; z-index: 9; width: 250px; max-height: 72vh; display: flex; flex-direction: column; background: #2c2c2c; border: 1px solid #444; border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.5); color: #e6e6e6; }
         #fx-panel[hidden] { display: none; }
@@ -506,6 +724,17 @@
         .modal .modal-body dl { margin: 4px 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; }
         .modal .modal-body dt { color: #9aa7b3; white-space: nowrap; }
         .modal .modal-body dd { margin: 0; }
+        #scene-save-modal .scene-name { width: 100%; box-sizing: border-box; background: #1e1e1e; color: #e6e6e6; border: 1px solid #444; border-radius: 4px; padding: 6px 8px; font-size: 13px; }
+        #scene-save-modal .scene-name:focus { border-color: #3485bb; outline: none; }
+        #scene-save-modal .scene-save-btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+        #scene-save-modal .scene-save-btns button { background: #1e1e1e; color: #e6e6e6; border: 1px solid #555; border-radius: 5px; padding: 6px 18px; font-size: 13px; cursor: pointer; }
+        #scene-save-modal .scene-save-btns button#scene-save-ok { background: #236692; border-color: #3485bb; }
+        #scene-save-modal .scene-save-btns button:hover { border-color: #4a90d9; }
+        #confirm-modal { z-index: 1002; } /* 他のモーダル(1000)より前面に確認オーバーレイを出す */
+        #confirm-modal .confirm-btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+        #confirm-modal .confirm-btns button { background: #1e1e1e; color: #e6e6e6; border: 1px solid #555; border-radius: 5px; padding: 6px 18px; font-size: 13px; cursor: pointer; }
+        #confirm-modal .confirm-btns button#confirm-ok { background: #8a2f2f; border-color: #c0392b; }
+        #confirm-modal .confirm-btns button:hover { border-color: #4a90d9; }
         .modal .modal-body .muted { color: #9aa7b3; font-size: 12px; }
         .modal .app-logo { font-size: 16px; font-weight: bold; color: #e6e6e6; }
         .modal .app-logo .ver { color: #6cb6ff; margin-left: 8px; font-weight: normal; }
@@ -516,7 +745,8 @@
         <div class="menu-wrap">
             <button id="file-btn" class="secondary" title="ファイル">ファイル ▾</button>
             <div id="file-menu" class="tb-menu" hidden>
-                <button id="load-btn" type="button">VRM 読込</button>
+                <button id="model-open-btn" type="button">モデルを追加</button>
+                <button id="scene-load-btn" type="button" hidden>シーンロード</button>
             </div>
         </div>
         <div class="menu-wrap">
@@ -531,13 +761,17 @@
             <button id="window-btn" class="secondary" title="ウィンドウを開く">ウィンドウ ▾</button>
             <div id="window-menu" class="tb-menu" hidden>
                 <button type="button" data-target="preview-panel">プレビュー</button>
+                <button type="button" data-target="scene-panel">モデル / ボーン</button>
+                <button type="button" data-target="camera-panel">カメラ設定</button>
                 <button type="button" data-target="transform-panel">ルート変換</button>
+                <button type="button" data-target="ref-panel">背景画像</button>
                 <button type="button" data-target="expr-panel">表情</button>
                 <button type="button" data-target="hand-pose-panel">手のポーズ</button>
                 <button type="button" data-target="pose-lib-panel">ポーズライブラリ</button>
                 <button type="button" data-target="fx-panel">アフターエフェクト</button>
             </div>
         </div>
+        <button id="scene-save-btn" title="シーンを保存" hidden>💾 シーン保存</button>
         <button id="capture-btn">📷 撮影</button>
         <div id="help-menu-wrap" class="menu-wrap">
             <button id="help-btn" class="secondary" title="ヘルプ">ヘルプ ▾</button>
@@ -603,21 +837,6 @@
         </div>
         <hr>
         <div class="row">
-            <label>カメラ名</label>
-            <input id="camera-name" type="text" value="camera1" placeholder="camera1">
-        </div>
-        <div class="row">
-            <label>出力タイプ</label>
-            <div class="check-row"><label><input id="type-image" type="checkbox" checked> image (RGB)</label></div>
-            <div class="check-row"><label><input id="type-mask" type="checkbox" checked> mask (白シルエット)</label></div>
-            <div class="check-row"><label><input id="type-mask-hands" type="checkbox" checked> mask(hands) (手のみ)</label></div>
-            <div class="check-row"><label><input id="type-depth" type="checkbox" checked> depth (近=白)</label></div>
-            <div class="check-row"><label><input id="type-normal" type="checkbox" checked> normal (視点空間)</label></div>
-            <div class="check-row"><label><input id="type-openpose-body" type="checkbox" checked> OpenPose Body</label></div>
-            <div class="check-row"><label><input id="type-openpose-hands" type="checkbox" checked> OpenPose Hands</label></div>
-            <div class="check-row"><label><input id="type-openpose-bodyhands" type="checkbox" checked> OpenPose Body + Hands</label></div>
-        </div>
-        <div class="row">
             <label>保存先フォルダ</label>
             <input id="save-folder" type="text" placeholder="(既定: ComfyUI output)">
         </div>
@@ -634,13 +853,30 @@
         </div>
     </div>
     <div id="viewport">
+        <img id="ref-image" alt="">
         <div id="capture-frame"></div>
         <div id="app-badge">VRM Scene Editor <span class="ver">v0.1a</span></div>
+        <div id="ref-panel" hidden>
+            <div class="rf-title"><span>背景画像</span><button id="ref-close" type="button" title="閉じる">×</button></div>
+            <div class="rf-body">
+                <div class="rf-btns">
+                    <button id="ref-load" class="rf-act" type="button">画像を読込</button>
+                    <button id="ref-clear" class="rf-act" type="button">クリア</button>
+                </div>
+                <label class="rf-check"><input id="ref-show" type="checkbox"> 表示する</label>
+                <label class="rf-check"><input id="ref-front" type="checkbox"> モデルより前面に表示</label>
+                <div class="rf-row"><label>不透明度</label><input id="ref-opacity" type="range" min="0" max="1" step="0.01" value="0.5"><span class="rf-val" id="ref-opacity-val">0.50</span></div>
+                <div class="rf-row"><label>拡大</label><input id="ref-scale" type="range" min="0.2" max="3" step="0.01" value="1"><span class="rf-val" id="ref-scale-val">1.00</span></div>
+                <div class="rf-row"><label>回転</label><input id="ref-rot" type="range" min="-180" max="180" step="0.1" value="0"><span class="rf-val" id="ref-rot-val">0.0°</span></div>
+                <div class="rf-row"><label>横位置</label><input id="ref-x" type="range" min="-100" max="100" step="0.1" value="0"><span class="rf-val" id="ref-x-val">0.0</span></div>
+                <div class="rf-row"><label>縦位置</label><input id="ref-y" type="range" min="-100" max="100" step="0.1" value="0"><span class="rf-val" id="ref-y-val">0.0</span></div>
+            </div>
+        </div>
         <div id="preview-panel">
             <div class="pv-title"><span>プレビュー</span><button id="pv-close" type="button" title="閉じる">×</button></div>
             <div class="pv-row">
-                <select id="preview-type" title="重ね合わせるタイプ"></select>
-                <label class="pv-show" title="ベース画像の表示/非表示"><input id="preview-show-image" type="checkbox" checked>画像</label>
+                <select id="preview-camera" title="プレビューするカメラ"></select>
+                <select id="preview-type" title="プレビューする表示モード"></select>
             </div>
             <canvas id="preview-canvas" width="256" height="256"></canvas>
             <div class="pv-resize" title="ドラッグでサイズ変更"></div>
@@ -685,11 +921,76 @@
                 <div class="hp-sep"></div>
                 <div class="hp-row"><span class="hp-label">右手</span><select id="hp-right-preset" class="hp-select"></select></div>
                 <div class="hp-row"><span class="hp-label">ウェイト</span><input id="hp-right-weight" class="hp-weight" type="range" min="0" max="1" step="0.01" value="1"><span id="hp-right-weight-val" class="ep-num">1.00</span></div>
+                <div class="hp-sep"></div>
+                <div class="hp-row"><span class="hp-label">詳細編集</span><button id="hp-focus-left" class="hp-focus-btn" type="button">左手を編集</button><button id="hp-focus-right" class="hp-focus-btn" type="button">右手を編集</button></div>
+            </div>
+        </div>
+        <!-- ハンドフォーカス: モード中だけ表示する終了バー -->
+        <div id="hand-focus-bar" hidden>
+            <span id="hand-focus-label">ハンドフォーカス</span>
+            <button id="hand-focus-exit" type="button">終了 (Esc)</button>
+        </div>
+        <!-- ハンド編集パネル: フォーカス中に表示。指ごとの curl/splay ＋ 握り/カッピング -->
+        <div id="hand-edit-panel" hidden>
+            <div class="ep-title he-title"><span id="hand-edit-title">ハンド編集</span><button id="hand-edit-reset" type="button" title="平手に戻す">平手</button></div>
+            <div class="he-body" id="hand-edit-body"></div>
+        </div>
+        <!-- ハンドポーズパレット: フォーカス中に右側に表示。正方形サムネ・左右共通で適用 -->
+        <div id="hand-pose-palette" hidden>
+            <div class="ep-title hpl-title"><span>ハンドポーズパレット</span></div>
+            <div class="hpl-grid" id="hpl-list"></div>
+            <div class="hpl-status">
+                <span id="hpl-count">0件</span>
+                <span class="hpl-status-btns">
+                    <button id="hpl-add" type="button" title="現在の手を登録">追加</button>
+                    <button id="hpl-del" type="button" title="選択を削除">削除</button>
+                </span>
+            </div>
+        </div>
+        <!-- ポーズ名登録オーバーレイ -->
+        <div id="hand-pose-name-modal" class="modal-overlay" hidden>
+            <div class="modal" role="dialog" aria-modal="true">
+                <div class="modal-title"><span>ポーズ名を登録</span><button type="button" data-close title="閉じる">×</button></div>
+                <div class="modal-body">
+                    <p class="muted">ポーズ名（未入力なら hand-連番）</p>
+                    <input id="hpn-input" type="text" class="scene-name" placeholder="hand-...">
+                    <div class="hpn-btns"><button id="hpn-ok" type="button">OK</button><button type="button" data-close>キャンセル</button></div>
+                </div>
+            </div>
+        </div>
+        <div id="scene-panel" hidden>
+            <div class="ep-title"><span>モデル / ボーン</span><span class="pl-title-btns"><button id="bone-tree-reload" type="button" title="ボーンツリー再構築">↻</button><button id="scene-panel-close" type="button" title="閉じる">×</button></span></div>
+            <div class="sp-models">
+                <div class="sp-head">配置モデル</div>
+                <div id="scene-model-list" class="sm-body"></div>
+            </div>
+            <div class="sp-tree">
+                <div class="sp-head">ボーンツリー</div>
+                <div id="bone-tree-body"><div class="bt-empty">モデルがありません</div></div>
+            </div>
+            <div class="sp-status" id="scene-status">—</div>
+        </div>
+        <div id="camera-panel" hidden>
+            <div class="ep-title"><span>カメラ設定</span><button id="camera-panel-close" type="button" title="閉じる">×</button></div>
+            <div class="cam-body">
+                <div class="cam-row"><label>カメラ</label><select id="camera-select"></select></div>
+                <label class="cam-check"><input id="camera-enabled" type="checkbox"> このカメラを有効にする（撮影対象）</label>
+                <div class="cam-row"><label>表示モード</label></div>
+                <div id="camera-types" class="cam-models"></div>
+                <div class="cam-row"><label>含めるモデル</label></div>
+                <div id="camera-models" class="cam-models"></div>
             </div>
         </div>
         <div id="pose-lib-panel" hidden>
-            <div class="ep-title"><span>ポーズライブラリ</span><span class="pl-title-btns"><button id="pose-lib-reload" type="button" title="一覧を更新">↻</button><button id="pose-lib-close" type="button" title="閉じる">×</button></span></div>
-            <div class="pl-body"><div class="pl-empty">読込中 ...</div></div>
+            <div class="ep-title"><span>ポーズライブラリ</span><button id="pose-lib-close" type="button" title="閉じる">×</button></div>
+            <div class="plib-grid" id="pose-lib-grid"><div class="plib-empty">読込中 ...</div></div>
+            <div class="plib-status">
+                <span id="pose-lib-count">0件</span>
+                <span class="plib-status-btns">
+                    <button id="pose-lib-reload" type="button" title="一覧を更新">再読込</button>
+                    <button id="pose-lib-del" type="button" title="選択を削除">削除</button>
+                </span>
+            </div>
         </div>
         <div id="fx-panel" hidden>
             <div class="ep-title"><span>アフターエフェクト</span><button id="fx-close" type="button" title="閉じる">×</button></div>
@@ -784,6 +1085,7 @@
     </div>
     <div id="toast-container"></div>
     <input id="vrm-input" type="file" accept=".vrm,.glb,.gltf" style="display:none">
+    <input id="ref-input" type="file" accept="image/*" style="display:none">
     <div id="color-popup" hidden>
         <div class="cp-wheel">
             <div class="cp-ring"></div>
@@ -875,14 +1177,97 @@
                 </dl>
                 <p class="muted">対象はポーズ・表情など。全体の移動・回転（ルート変換）は対象外です。</p>
 
+                <h3>モデルとカメラ</h3>
+                <dl>
+                    <dt>ファイル ▾ → モデルを追加</dt><dd>VRMをサムネイルから選んで追加（複数可）。矢印モードでビュー上のモデルをクリックして編集対象を切替。</dd>
+                    <dt>配置モデル（モデル / ボーン 窓）</dt><dd>表示／非表示・選択・削除（確認あり）。</dd>
+                    <dt>カメラ設定</dt><dd>カメラ1〜9。表示モード（image / mask / mask(hands) / seg / depth / normal / openpose…）を複数チェックで選択、有効／無効、含めるモデルを指定。</dd>
+                    <dt>📷 撮影</dt><dd>有効カメラ × 選択した表示モードを一括で保存・転送（camera{n}_{type}）。</dd>
+                    <dt>seg（セグメンテーション）</dt><dd>体と手を色分け。モデルごとに色相が変わる（含めるモデル数 × 2色）。自前のマスク／合成向け。</dd>
+                </dl>
+
+                <h3>ハンドフォーカス（手の詳細編集）</h3>
+                <p class="muted">「手のポーズ」窓の「左手を編集 / 右手を編集」で開始。</p>
+                <dl>
+                    <dt>表示</dt><dd>手首から先だけを拡大表示し、手首を中心に回転。編集中は親IK（腕・体）を固定して手が動かない。</dd>
+                    <dt>ハンド編集スライダー</dt><dd>握り・カッピング（手のひらの丸み）、各指の曲げ・開き。3Dハンドルでの微調整も併用可。「平手」で全スライダーを戻す。</dd>
+                    <dt>ハンドポーズパレット</dt><dd>正方形サムネのグリッド。ダブルクリックで適用（左右共通＝自動でミラー）。「追加」で名前を付けて登録、「削除」で確認の上削除。</dd>
+                    <dt>終了 (Esc)</dt><dd>クリッピング解除・カメラ・表示を元に戻す。</dd>
+                </dl>
+
+                <h3>ポーズライブラリ</h3>
+                <dl>
+                    <dt>サムネイル</dt><dd>青いマネキンに各ポーズを当てた正方形サムネ（自動生成・保存）。</dd>
+                    <dt>ダブルクリック</dt><dd>選択中モデルにポーズを適用。</dd>
+                    <dt>削除</dt><dd>選択して「削除」（確認あり）。models/pose のファイルを削除。</dd>
+                </dl>
+
+                <h3>背景画像</h3>
+                <dl>
+                    <dt>背景画像（ウィンドウ ▾）</dt><dd>参考画像を背景に敷いてポーズ合わせ。不透明度・拡大・回転・位置、モデルより前面表示も可。撮影には写り込みません。</dd>
+                </dl>
+
+                <h3>ウィンドウ</h3>
+                <p class="muted">各ウィンドウはタイトルでドラッグ移動、右下でサイズ変更できます。ハンド編集・ハンドポーズパレットは位置・サイズを記憶します。</p>
+
                 <h3>その他</h3>
                 <dl>
-                    <dt>📷 撮影</dt><dd>現在のビューをキャプチャ</dd>
-                    <dt>リセット</dt><dd>カメラ／ポーズ／ルート（全体の位置・向き）</dd>
+                    <dt>リセット</dt><dd>カメラ／ポーズ／ルート（全体の位置・向き）。</dd>
                 </dl>
             </div>
         </div>
     </div>
-    <script type="module" src="/vrm-scene-editor-assets/main.js?v=53"></script>
+    <!-- 確認ダイアログ（オーバーレイ） -->
+    <div id="confirm-modal" class="modal-overlay" hidden>
+        <div class="modal" role="dialog" aria-modal="true">
+            <div class="modal-title"><span>確認</span><button type="button" data-close title="閉じる">×</button></div>
+            <div class="modal-body">
+                <p id="confirm-message"></p>
+                <div class="confirm-btns"><button id="confirm-ok" type="button">削除</button><button type="button" data-close>キャンセル</button></div>
+            </div>
+        </div>
+    </div>
+    <!-- シーン保存ダイアログ -->
+    <div id="scene-save-modal" class="modal-overlay" hidden>
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="scene-save-title">
+            <div class="modal-title"><span id="scene-save-title">シーンを保存</span><button type="button" data-close title="閉じる">×</button></div>
+            <div class="modal-body">
+                <p class="muted">シーン名（未入力なら scene-日時 で保存）</p>
+                <input id="scene-name-input" type="text" class="scene-name" placeholder="scene-...">
+                <div class="scene-save-btns"><button id="scene-save-ok" type="button">保存</button><button type="button" data-close>キャンセル</button></div>
+            </div>
+        </div>
+    </div>
+    <!-- モデル読み込み（中央モーダル） -->
+    <div id="model-modal" class="modal-overlay" hidden>
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="model-title">
+            <div class="modal-title">
+                <span id="model-title">モデルを追加</span>
+                <span class="pl-title-btns"><button id="model-reload" type="button" title="一覧を更新">↻</button></span>
+            </div>
+            <div class="ml-hint">サムネイルをクリックで選択（複数可）→「追加」</div>
+            <div class="pl-body"><div class="pl-empty">読込中 ...</div></div>
+            <div class="ml-foot">
+                <label class="ml-modecheck" title="OFF=全身レンダリング / ON=VRM内蔵サムネイル（顔）"><input id="model-embedded-mode" type="checkbox" checked> 内蔵サムネイルを表示</label>
+                <span class="ml-foot-btns"><button id="model-add" type="button">追加</button><button id="model-close-btn" type="button">閉じる</button></span>
+            </div>
+        </div>
+    </div>
+    <!-- シーンロード（中央モーダル） -->
+    <div id="scene-modal" class="modal-overlay" hidden>
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="scene-load-title">
+            <div class="modal-title">
+                <span id="scene-load-title">シーンロード</span>
+                <span class="pl-title-btns"><button id="scene-reload" type="button" title="一覧を更新">↻</button></span>
+            </div>
+            <div class="ml-hint">サムネイルをクリックで選択 →「選択」、またはダブルクリックで読込</div>
+            <div class="pl-body"><div class="pl-empty">読込中 ...</div></div>
+            <div class="ml-foot">
+                <span></span>
+                <span class="ml-foot-btns"><button id="scene-load-ok" type="button">選択</button><button id="scene-load-close" type="button">閉じる</button></span>
+            </div>
+        </div>
+    </div>
+    <script type="module" src="/vrm-scene-editor-assets/main.js?v=107"></script>
 </body>
 </html>

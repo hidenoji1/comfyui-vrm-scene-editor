@@ -19,20 +19,9 @@ const loadBtn = document.getElementById("load-btn");
 const resetBtn = document.getElementById("reset-btn");
 const captureBtn = document.getElementById("capture-btn");
 const captureFrame = document.getElementById("capture-frame");
-const cameraNameInput = document.getElementById("camera-name");
 const saveFolderInput = document.getElementById("save-folder");
 const captureResSelect = document.getElementById("capture-res");
 const transparentBgInput = document.getElementById("transparent-bg");
-const typeImageInput = document.getElementById("type-image");
-const typeMaskInput = document.getElementById("type-mask");
-const typeMaskHandsInput = document.getElementById("type-mask-hands");
-const typeDepthInput = document.getElementById("type-depth");
-const typeNormalInput = document.getElementById("type-normal");
-const typeOpenposeBodyInput = document.getElementById("type-openpose-body");
-const typeOpenposeHandsInput = document.getElementById("type-openpose-hands");
-const typeOpenposeBodyHandsInput = document.getElementById("type-openpose-bodyhands");
-const previewType = document.getElementById("preview-type");
-const previewShowImage = document.getElementById("preview-show-image");
 const previewCanvas = document.getElementById("preview-canvas");
 const previewCtx = previewCanvas ? previewCanvas.getContext("2d") : null;
 
@@ -262,6 +251,7 @@ studioFloor.receiveShadow = true;
 scene.add(studioFloor);
 
 const darkBG = new THREE.Color(0x2b2b2b);
+let refImageActive = false; // true while a reference underlay image is shown (live bg goes transparent)
 const STUDIO_BG_KEY = "vrmSceneEditor.studioBg";
 let studioBgColor = new THREE.Color(0xd7dbe2);
 try { const s = localStorage.getItem(STUDIO_BG_KEY); if (s) studioBgColor.set(s); } catch (_) {}
@@ -297,7 +287,13 @@ function applyStudioLook(on) {
     keyLight.castShadow = studioShadow;          // off -> no shadow map rendered (big perf win)
     studioFloor.visible = on && studioShadow;
     grid.visible = !on;
-    scene.background = on ? studioBG : darkBG;
+    updateLiveBackground(); // respects 背景画像 mode (transparent live bg) vs studio/dark
+}
+// Live-view background: transparent while a reference image underlay is shown
+// (so the DOM <img> behind the canvas is visible), otherwise studio or dark.
+function updateLiveBackground() {
+    if (refImageActive) { scene.background = null; renderer.setClearColor(0x000000, 0); }
+    else scene.background = studioLook ? studioBG : darkBG;
 }
 applyStudioLook(studioLook);
 
@@ -323,11 +319,15 @@ if (studioShadowInput) {
 const loader = new GLTFLoader();
 loader.register((parser) => new VRMLoaderPlugin(parser));
 
+// Multi-model: every loaded model lives in loadedModels; currentVRM/currentModel/
+// modelRoot/modelTilt always point at the ACTIVE (editable) one. Switching active
+// rebuilds the (single) bone-control set for that model.
+let loadedModels = []; // [{ id, vrm, model, root, tilt, name }]
+let _modelIdSeq = 0;   // unique id per loaded model (for per-camera include lists)
 let currentVRM = null;
 let currentModel = null;
 let modelRoot = null;      // wrapper Group (position + yaw); the root move/yaw rig transforms THIS
 let modelTilt = null;      // inner Group (pitch/roll) inside modelRoot; the tilt rig transforms THIS
-let headFeat = null; // baked head-local nose/eyes/ears from the face mesh (VRoid), or null
 const clock = new THREE.Clock();
 
 // ---- Pose editing: FK handles + Pole-Vector IK -------------------------------
@@ -576,7 +576,8 @@ const HINT_WEIGHT_KEY = "vrmSceneEditor.hintWeight";
 let boneEditEnabled = localStorage.getItem(BONE_EDIT_KEY) !== "0"; // default on
 let hintWeight = parseFloat(localStorage.getItem(HINT_WEIGHT_KEY) ?? "1") || 1;
 
-let boneHandles = [];      // FK: [{ mesh, bone, initialQuat }]
+let boneHandles = [];      // FK: [{ mesh, bone, name, initialQuat }]
+const lockedBones = new Set(); // locked FK bone nodes: not selectable, angle frozen (bone-tree checkbox)
 let handPoseBones = { left: [], right: [] }; // hand pose: [{ node, finger, joint, restQuat, curlAxis, splayAxis, opposeAxis }]
 let HANDPOSE_DEBUG = false; // [debug] log thumb geometry/curl to the browser console; set true to re-enable
 let ikProxies = [];        // flat list of target+hint proxy meshes (ray/visibility)
@@ -698,14 +699,31 @@ function clearBoneControls() {
 // them out of captures/previews and to honour the "ボーン編集" toggle.
 let _editVisible = true; // last setEditVisible() state (so the line-art normal pass can restore it)
 let _gizmoPassthrough = false; // true while Alt is held: rotation rig hidden + non-interactive (pick-through)
+function activeEntryVisible() { // the active model's 表示/非表示 state
+    const e = loadedModels.find((x) => x.root === modelRoot);
+    return !e || e.visible !== false;
+}
+const HAND_FOCUS_BONE_RE = /Thumb|Index|Middle|Ring|Little|Hand/;
+function isHandFocusBone(name) { return !!name && handFocusSide && name.startsWith(handFocusSide) && HAND_FOCUS_BONE_RE.test(name); }
 function setEditVisible(v) {
     _editVisible = v;
-    for (const h of boneHandles) h.mesh.visible = v;
-    for (const p of ikProxies) p.visible = v;
-    for (const ch of ikChains) if (ch.guide) ch.guide.visible = v;
-    updateGazeVisibility(v); // center ball (linked) or per-eye balls (unlinked); hidden under camera-gaze
-    fkGizmo.visible = v && !!selectedFK && !_gizmoPassthrough;
-    if (moveGizmo.object) moveGizmo.visible = v;
+    const show = v && activeEntryVisible(); // hide aids when the active model is hidden
+    if (handFocusActive) {
+        // ハンドフォーカス中: フォーカスした手の指/手首の制御点のみ。IK/アンカー球・ガイド・ギズモは隠す。
+        for (const h of boneHandles) h.mesh.visible = show && isHandFocusBone(h.name) && !lockedBones.has(h.bone);
+        for (const p of ikProxies) p.visible = false;
+        for (const ch of ikChains) if (ch.guide) ch.guide.visible = false;
+        updateGazeVisibility(false);
+        fkGizmo.visible = show && !!selectedFK && !_gizmoPassthrough;
+        if (moveGizmo.object) moveGizmo.visible = false;
+        return;
+    }
+    for (const h of boneHandles) h.mesh.visible = show && !lockedBones.has(h.bone); // locked bones: control point hidden
+    for (const p of ikProxies) p.visible = show;
+    for (const ch of ikChains) if (ch.guide) ch.guide.visible = show;
+    updateGazeVisibility(show); // center ball (linked) or per-eye balls (unlinked); hidden under camera-gaze
+    fkGizmo.visible = show && !!selectedFK && !_gizmoPassthrough;
+    if (moveGizmo.object) moveGizmo.visible = show;
 }
 
 // Build FK spheres (children of normalized bones -> follow the pose) + world-space
@@ -721,7 +739,7 @@ function setupBoneControls(vrm) {
         const mesh = makeHandleMesh(FK_COLOR, FK_SMALL_RE.test(name) ? R_FK_SMALL : R_FK, 999);
         mesh.userData.kind = "fk";
         bone.add(mesh); // child of the normalized bone -> follows the pose
-        boneHandles.push({ mesh, bone, initialQuat: bone.quaternion.clone() });
+        boneHandles.push({ mesh, bone, name, initialQuat: bone.quaternion.clone() });
     }
     for (const c of IK_CHAINS) {
         const rootNode = humanoid.getNormalizedBoneNode(c.root);
@@ -1231,16 +1249,118 @@ function solveTwoBoneIK(root, mid, tip, target, hint, weight) {
     applyWorldRotation(mid, _ikQ);
 }
 
-function clearModel() {
+// Tear down the active model's bone controls + gizmo (kept as a single set, shared
+// by whichever model is active).
+function disposeActiveControls() {
     clearBoneControls();
     moveGizmo.detach();
-    if (modelRoot) scene.remove(modelRoot); // detaches modelTilt + currentModel
-    if (currentVRM) VRMUtils.deepDispose(currentVRM.scene);
-    currentVRM = null;
-    currentModel = null;
-    modelRoot = null;
-    modelTilt = null;
-    headFeat = null;
+}
+
+function clearAllModels() {
+    disposeActiveControls();
+    for (const e of loadedModels) {
+        scene.remove(e.root);
+        if (e.vrm) VRMUtils.deepDispose(e.vrm.scene);
+        else e.model.traverse((o) => { o.geometry?.dispose?.(); });
+    }
+    loadedModels = [];
+    currentVRM = null; currentModel = null; modelRoot = null; modelTilt = null;
+}
+
+// Make `entry` the active (editable) model: repoint the globals and rebuild the
+// per-model editing aids (bone handles / IK / hips / gaze / expressions).
+function activateModel(entry) {
+    disposeActiveControls();
+    currentVRM = entry.vrm;
+    currentModel = entry.model;
+    modelRoot = entry.root;
+    modelTilt = entry.tilt;
+    moveGizmo.attach(modelRoot);
+    moveGizmo.visible = boneEditEnabled;
+    if (currentVRM) {
+        computeHeadFeatures(currentVRM);
+        computeHandMaskAttr(currentVRM);
+        setupBoneControls(currentVRM); // also resetAnchorUI + snapProxies + setEditVisible
+        setupHandPose(currentVRM);
+        applyCurrentHandPose();
+    }
+    buildExpressionPanel(currentVRM);
+    syncTransformPanel();
+    resetHistory();
+    updateModelListUI();
+    if (typeof buildBoneTree === "function") buildBoneTree(); // rebuild tree for the new active model (if open)
+}
+
+function removeModel(entry) {
+    const i = loadedModels.indexOf(entry);
+    if (i < 0) return;
+    const wasActive = entry.root === modelRoot;
+    scene.remove(entry.root);
+    if (entry.vrm) VRMUtils.deepDispose(entry.vrm.scene);
+    loadedModels.splice(i, 1);
+    if (wasActive) {
+        if (loadedModels.length) activateModel(loadedModels[Math.min(i, loadedModels.length - 1)]);
+        else {
+            disposeActiveControls();
+            currentVRM = null; currentModel = null; modelRoot = null; modelTilt = null;
+            buildExpressionPanel(null); syncTransformPanel(); updateModelListUI();
+        }
+    } else { updateModelListUI(); }
+}
+
+// Rebuild the 配置モデル list (click a row to make it active, × to remove).
+function updateModelListUI() {
+    if (typeof rebuildCameraModelChecks === "function") rebuildCameraModelChecks(); // refresh 含めるモデル
+    updateSceneStatus();
+    const list = document.getElementById("scene-model-list");
+    if (!list) return;
+    list.innerHTML = "";
+    if (!loadedModels.length) {
+        list.innerHTML = '<div class="sm-empty">モデルがありません</div>';
+        return;
+    }
+    loadedModels.forEach((e) => {
+        const row = document.createElement("div");
+        row.className = "sm-row" + (e.root === modelRoot ? " active" : "");
+        const vis = document.createElement("input"); // left: 表示/非表示
+        vis.type = "checkbox"; vis.className = "sm-vis"; vis.checked = e.visible !== false; vis.title = "表示/非表示";
+        vis.addEventListener("change", () => { e.visible = vis.checked; e.root.visible = vis.checked; setEditVisible(_editVisible); }); // hide/show aids with the model
+        const nm = document.createElement("button");
+        nm.type = "button"; nm.className = "sm-name"; nm.textContent = e.name; nm.title = e.name;
+        nm.addEventListener("click", () => { if (e.root !== modelRoot) activateModel(e); });
+        const del = document.createElement("button"); // right: 削除（確認ダイアログ）
+        del.type = "button"; del.className = "sm-del"; del.textContent = "×"; del.title = "削除";
+        del.addEventListener("click", (ev) => { ev.stopPropagation(); confirmDialog(`「${e.name}」を削除しますか？`, () => removeModel(e)); });
+        row.append(vis, nm, del);
+        list.appendChild(row);
+    });
+}
+
+// Reusable confirm overlay (falls back to window.confirm if the modal is absent).
+function confirmDialog(message, onConfirm) {
+    const modal = document.getElementById("confirm-modal");
+    const msgEl = document.getElementById("confirm-message");
+    const ok = document.getElementById("confirm-ok");
+    if (!modal || !ok) { if (window.confirm(message)) onConfirm(); return; }
+    if (msgEl) msgEl.textContent = message;
+    ok.onclick = () => { modal.hidden = true; ok.onclick = null; onConfirm(); };
+    modal.hidden = false;
+}
+(function setupConfirm() {
+    const modal = document.getElementById("confirm-modal");
+    if (!modal) return;
+    const ok = document.getElementById("confirm-ok");
+    const close = () => { modal.hidden = true; if (ok) ok.onclick = null; };
+    modal.addEventListener("click", (e) => { if (e.target === modal || e.target.closest("[data-close]")) close(); });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !modal.hidden) close(); });
+})();
+
+// Thin status bar at the bottom of the merged モデル/ボーン window.
+function updateSceneStatus() {
+    const el = document.getElementById("scene-status");
+    if (!el) return;
+    const active = loadedModels.find((e) => e.root === modelRoot);
+    el.textContent = `配置 ${loadedModels.length}体 / 選択: ${active ? active.name : "—"}`;
 }
 
 // Center the model on x/z and drop its feet to y=0 (within its parent = modelRoot).
@@ -1272,52 +1392,41 @@ function placeAndFrame(model) {
     frameCamera(model);
 }
 
-function onModelLoaded(gltf) {
-    clearModel();
+// add=false -> replace all; add=true -> keep existing models and add this one.
+// file: source filename in models/vrm (for scene save/restore), or null (sample).
+function onModelLoaded(gltf, add, file) {
+    if (!add) clearAllModels();
 
     const vrm = gltf.userData.vrm;
+    let model;
     if (vrm) {
-        // VRM0 models face -Z; rotate so they face +Z (toward the camera).
-        VRMUtils.rotateVRM0(vrm);
+        VRMUtils.rotateVRM0(vrm); // VRM0 faces -Z; rotate to face +Z (toward the camera)
         VRMUtils.removeUnnecessaryVertices(gltf.scene);
-        currentVRM = vrm;
-        currentModel = vrm.scene;
+        model = vrm.scene;
     } else {
-        currentModel = gltf.scene;
+        model = gltf.scene;
     }
-
-    currentModel.traverse((obj) => {
-        if (obj.isMesh || obj.isSkinnedMesh) {
-            obj.castShadow = true;
-            obj.frustumCulled = false;
-        }
+    model.traverse((obj) => {
+        if (obj.isMesh || obj.isSkinnedMesh) { obj.castShadow = true; obj.frustumCulled = false; }
     });
 
-    // Wrap the model in root groups (modelRoot = move + yaw, modelTilt = pitch/roll + scale)
-    // that the numeric transform panel drives, keeping the centered model + pose independent
-    // of where the figure is staged in the scene.
-    modelRoot = new THREE.Group();
-    modelTilt = new THREE.Group();
-    modelTilt.add(currentModel);
-    modelRoot.add(modelTilt);
-    scene.add(modelRoot);
-    placeAndFrame(currentModel);
-    moveGizmo.attach(modelRoot);          // XYZ move gizmo at the model origin (feet)
-    moveGizmo.visible = boneEditEnabled;
-    syncTransformPanel();
-    if (vrm) {
-        computeHeadFeatures(vrm);
-        computeHandMaskAttr(vrm);
-        setupBoneControls(vrm);
-        setupHandPose(vrm);     // build the finger-bone table for hand-pose presets
-        applyCurrentHandPose(); // stamp the persisted 左/右 hand poses
-    }
-    buildExpressionPanel(vrm); // populate the floating 表情 accordion (empty for non-VRM)
+    // Wrap in root groups (modelRoot = move + yaw, modelTilt = pitch/roll + scale).
+    const root = new THREE.Group();
+    const tilt = new THREE.Group();
+    tilt.add(model);
+    root.add(tilt);
+    scene.add(root);
+    centerModel(model); // center within tilt; root.position then stages it in the scene
 
     const meta = vrm?.meta;
-    const name = meta?.name || meta?.title || "model";
+    const name = meta?.name || meta?.title || `model${loadedModels.length + 1}`;
+    const entry = { id: ++_modelIdSeq, vrm: vrm || null, model, root, tilt, name, file: file || null };
+    root.position.x = loadedModels.length * 0.8; // offset added models so they don't overlap
+    loadedModels.push(entry);
+    if (loadedModels.length === 1) frameCamera(model); // only frame the first / replaced model
+    activateModel(entry);
+
     setStatus(vrm ? `VRM 読込完了: ${name} (VRM${meta?.metaVersion ?? "?"})` : "GLTF 読込完了");
-    resetHistory(); // start the undo stack from the freshly-loaded pose
 }
 
 function loadFile(file) {
@@ -1339,7 +1448,7 @@ function loadFile(file) {
 // ---- UI wiring ----
 // 外部VRMの読み込み: ALLOW_FILE_LOAD が false なら全経路を無効化（同梱モデル専用）。
 const FILE_LOAD_DISABLED_MSG = "外部VRMの読み込みは無効です（同梱モデル専用）";
-if (ALLOW_FILE_LOAD) {
+if (ALLOW_FILE_LOAD && loadBtn) {
     loadBtn.addEventListener("click", () => fileInput.click());
     fileInput.addEventListener("change", (e) => loadFile(e.target.files?.[0]));
 } else if (loadBtn) {
@@ -1361,8 +1470,10 @@ resetBtn.addEventListener("click", () => {
 viewport.addEventListener("dragover", (e) => { e.preventDefault(); });
 viewport.addEventListener("drop", (e) => {
     e.preventDefault();
+    const f = e.dataTransfer?.files?.[0];
+    if (f && f.type && f.type.startsWith("image/")) { loadRefImage(f); return; } // 画像 -> 背景参照
     if (!ALLOW_FILE_LOAD) { setStatus(FILE_LOAD_DISABLED_MSG); return; }
-    loadFile(e.dataTransfer?.files?.[0]);
+    loadFile(f);
 });
 
 // ---- Editing interaction: FK drag + IK target/hint view-plane drag ----
@@ -1424,7 +1535,7 @@ function rayHits(clientX, clientY) {
     _boneMouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
     _boneRaycaster.setFromCamera(_boneMouse, camera);
     _pickList.length = 0;
-    for (const h of boneHandles) _pickList.push(h.mesh);
+    for (const h of boneHandles) if (!lockedBones.has(h.bone)) _pickList.push(h.mesh); // locked bones aren't pickable
     for (const p of ikProxies) if (p.visible) _pickList.push(p); // skip hidden proxies (e.g. gaze ball under camera-gaze)
     return _boneRaycaster.intersectObjects(_pickList, false);
 }
@@ -1818,32 +1929,6 @@ if (handPosePanel) {
                 applyHandPose(side, handPoseState[side].preset, v);
             });
         }
-        // Capture-and-interpolate: pose the hand with the FK handles, then store it as the selected
-        // preset's 100% grip. The weight slider then blends rest -> this captured pose (no axis math).
-        const capBtn = document.createElement("button");
-        capBtn.textContent = "握りを記憶";
-        capBtn.title = "今の手の形を、選択中プリセットの100%ポーズとして記憶（ウェイトはこのポーズへ補間）";
-        capBtn.style.cssText = "margin:4px 4px 0 0; font-size:12px;";
-        capBtn.addEventListener("click", () => {
-            if (!captureHandPose(side, handPoseState[side].preset)) return;
-            handPoseState[side].weight = 1;
-            if (wInput) wInput.value = "1";
-            if (wVal) wVal.textContent = "1.00";
-            saveHandPoseState();
-            applyHandPose(side, handPoseState[side].preset, 1);
-            const t = capBtn.textContent; capBtn.textContent = "記憶しました ✓";
-            setTimeout(() => { capBtn.textContent = t; }, 1200);
-        });
-        const clrBtn = document.createElement("button");
-        clrBtn.textContent = "解除";
-        clrBtn.title = "記憶を消して計算ベースのポーズに戻す";
-        clrBtn.style.cssText = "margin:4px 0 0 0; font-size:12px;";
-        clrBtn.addEventListener("click", () => {
-            clearCapturedHandPose(side, handPoseState[side].preset);
-            applyHandPose(side, handPoseState[side].preset, handPoseState[side].weight);
-        });
-        const host = sel ? sel.parentNode : handPosePanel;
-        if (host) { host.appendChild(capBtn); host.appendChild(clrBtn); }
     }
     // draggable title + close (mirror the 表情 panel)
     const hpTitle = handPosePanel.querySelector(".ep-title");
@@ -2089,14 +2174,14 @@ function syncHandPoseUI(side) {
     if (wv) wv.textContent = handPoseState[side].weight.toFixed(2);
 }
 
-function applyVroidPose(poseText) {
-    if (!currentVRM) { showToast("VRMが読み込まれていません", "error", 2000); return false; }
-    let parsed;
-    try { parsed = JSON.parse(poseText); } catch (_) { showToast("ポーズファイルの解析に失敗しました", "error", 2500); return false; }
-    const humanoid = currentVRM.humanoid;
-    const isVrm0 = (currentVRM.meta?.metaVersion ?? "0") === "0";
+// Apply a parsed VRoid pose's BODY bones to an arbitrary VRM's normalized rig.
+// Returns the count applied. (Hand grip presets are handled by the caller for the
+// live model; the offscreen mannequin thumbnail only needs the body.)
+function applyVroidPoseBones(vrm, parsed) {
+    const humanoid = vrm?.humanoid;
+    if (!humanoid) return 0;
+    const isVrm0 = (vrm.meta?.metaVersion ?? "0") === "0";
     let applied = 0;
-
     if (parsed.BoneDefinition) {
         const corr = isVrm0 ? VROID_CORR_VRM0 : VROID_CORR_VRM1;
         const bd = parsed.BoneDefinition;
@@ -2117,6 +2202,28 @@ function applyVroidPose(poseText) {
             }
             applied++;
         }
+    } else {
+        // Generic fallback: {bones:{key:{x,y,z,w}}} or {key:{x,y,z,w}} already in
+        // normalized-rig space (e.g. a future native export). No conversion.
+        const bones = parsed.bones ?? parsed;
+        for (const [key, v] of Object.entries(bones)) {
+            if (!v || typeof v !== "object" || v.w === undefined) continue;
+            const node = humanoid.getNormalizedBoneNode(key) ??
+                         humanoid.getNormalizedBoneNode(key[0].toLowerCase() + key.slice(1));
+            if (!node) continue;
+            node.quaternion.set(v.x ?? 0, v.y ?? 0, v.z ?? 0, v.w).normalize();
+            applied++;
+        }
+    }
+    return applied;
+}
+function applyVroidPose(poseText) {
+    if (!currentVRM) { showToast("VRMが読み込まれていません", "error", 2000); return false; }
+    let parsed;
+    try { parsed = JSON.parse(poseText); } catch (_) { showToast("ポーズファイルの解析に失敗しました", "error", 2500); return false; }
+    const applied = applyVroidPoseBones(currentVRM, parsed);
+
+    if (parsed.BoneDefinition) {
         // Hand grip: VRoid keeps the finger shape as a named animation, not bone
         // rotations. Map it to our hand-pose preset (+weight) and stamp the fingers.
         for (const [side, nameKey, wKey] of [
@@ -2132,22 +2239,10 @@ function applyVroidPose(poseText) {
             syncHandPoseUI(side);
         }
         saveHandPoseState();
-    } else {
-        // Generic fallback: {bones:{key:{x,y,z,w}}} or {key:{x,y,z,w}} already in
-        // normalized-rig space (e.g. a future native export). No conversion.
-        const bones = parsed.bones ?? parsed;
-        for (const [key, v] of Object.entries(bones)) {
-            if (!v || typeof v !== "object" || v.w === undefined) continue;
-            const node = humanoid.getNormalizedBoneNode(key) ??
-                         humanoid.getNormalizedBoneNode(key[0].toLowerCase() + key.slice(1));
-            if (!node) continue;
-            node.quaternion.set(v.x ?? 0, v.y ?? 0, v.z ?? 0, v.w).normalize();
-            applied++;
-        }
     }
 
     if (!applied) { showToast("適用できるボーンが見つかりませんでした", "error", 2500); return false; }
-    humanoid.update();
+    currentVRM.humanoid.update();
     currentVRM.scene.updateMatrixWorld(true);
     snapProxies(true); // move IK/hip/shoulder balls onto the new pose
     commitHistory();   // applied a library pose -> record it
@@ -2155,41 +2250,547 @@ function applyVroidPose(poseText) {
 }
 
 // Pose library floating panel: list pose/ files, click to apply.
+// ---- モデル一覧: load VRM/GLB files the user dropped into models/vrm ----
+const MODEL_SUBDIR = "vrm"; // matches the backend folder name (models/vrm)
+// Sentinel "file" for the bundled sample model so a scene that contains it can be
+// restored (it lives under editor assets, not models/vrm).
+const DEFAULT_MODEL_FILE = "__default_sample__";
+const DEFAULT_MODEL_URL = "/vrm-scene-editor-assets/models/sample.vrm";
+function modelUrl(file) {
+    if (file === DEFAULT_MODEL_FILE) return DEFAULT_MODEL_URL;
+    return "/vrm-scene-models/" + encodeURIComponent(MODEL_SUBDIR) + "/" + encodeURIComponent(file);
+}
+function loadModelByUrl(url, name, add, file) {
+    setStatus(`読込中: ${name} ...`);
+    return new Promise((resolve) => {
+        loader.load(
+            url,
+            (gltf) => { onModelLoaded(gltf, add, file); setStatus(`読込完了: ${name}`); resolve(true); },
+            undefined,
+            (err) => { console.error(err); setStatus(`読込エラー: ${err?.message || err}`); resolve(false); },
+        );
+    });
+}
+function loadModelFromLibrary(m, add) {
+    return loadModelByUrl(modelUrl(m.file), m.name, add, m.file);
+}
+
+// Offscreen FULL-BODY thumbnail renderer. VRoid's embedded VRM thumbnail is just
+// a face close-up, so we render the whole model ourselves (lazily per visible
+// card, cached per file for the session). Portrait 3:4 to fit a standing figure.
+const THUMB_W = 264, THUMB_H = 352;
+const _thumbCache = new Map(); // file -> dataURL
+let _thumbR = null, _thumbScene = null, _thumbCam = null;
+function _initThumb() {
+    if (_thumbR) return;
+    _thumbR = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+    _thumbR.setPixelRatio(1);
+    _thumbR.setSize(THUMB_W, THUMB_H, false);
+    _thumbR.outputColorSpace = THREE.SRGBColorSpace;
+    _thumbScene = new THREE.Scene();
+    _thumbScene.background = new THREE.Color(0xffffff); // white thumbnail background
+    _thumbScene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.5));
+    const d = new THREE.DirectionalLight(0xffffff, 1.3); d.position.set(1, 2, 3); _thumbScene.add(d);
+    _thumbCam = new THREE.PerspectiveCamera(28, THUMB_W / THUMB_H, 0.01, 100);
+}
+function renderThumb(file) {
+    return new Promise((resolve) => {
+        try { _initThumb(); } catch (_) { resolve(null); return; }
+        loader.load(modelUrl(file), (gltf) => {
+            try {
+                const vrm = gltf.userData.vrm;
+                const obj = vrm ? vrm.scene : gltf.scene;
+                if (vrm) VRMUtils.rotateVRM0(vrm); // face +Z (no-op for VRM1)
+                _thumbScene.add(obj);
+                obj.updateWorldMatrix(true, true);
+                const box = new THREE.Box3().setFromObject(obj);
+                const size = new THREE.Vector3(); box.getSize(size);
+                const center = new THREE.Vector3(); box.getCenter(center);
+                const fov = THREE.MathUtils.degToRad(_thumbCam.fov);
+                const distH = (size.y / 2) / Math.tan(fov / 2);
+                const distW = (size.x / 2) / (Math.tan(fov / 2) * _thumbCam.aspect);
+                const dist = Math.max(distH, distW) * 1.12 + size.z; // fit height & width + margin
+                _thumbCam.position.set(center.x, center.y, center.z + dist);
+                _thumbCam.lookAt(center.x, center.y, center.z);
+                _thumbCam.updateProjectionMatrix();
+                _thumbR.render(_thumbScene, _thumbCam);
+                const url = _thumbR.domElement.toDataURL("image/png");
+                _thumbScene.remove(obj);
+                if (vrm) VRMUtils.deepDispose(vrm.scene);
+                else obj.traverse((o) => { o.geometry?.dispose?.(); const ms = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : []; for (const mm of ms) mm.dispose?.(); });
+                _thumbCache.set(file, url);
+                resolve(url);
+            } catch (e) { console.error("thumb render failed", e); resolve(null); }
+        }, undefined, () => resolve(null));
+    });
+}
+
+// Generic close + drag-by-title wiring for a floating panel.
+function setupFloatingPanel(panelId, closeId) {
+    const panel = document.getElementById(panelId);
+    if (!panel) return;
+    const closeBtn = closeId && document.getElementById(closeId);
+    if (closeBtn) closeBtn.addEventListener("click", () => { panel.hidden = true; });
+    const title = panel.querySelector(".ep-title");
+    if (title) {
+        let dx = 0, dy = 0, drag = false;
+        title.addEventListener("pointerdown", (e) => {
+            if (e.target.closest("button")) return;
+            const r = panel.getBoundingClientRect();
+            panel.style.left = r.left + "px"; panel.style.top = r.top + "px";
+            dx = e.clientX - r.left; dy = e.clientY - r.top; drag = true;
+            try { title.setPointerCapture(e.pointerId); } catch (_) {}
+            e.preventDefault();
+        });
+        title.addEventListener("pointermove", (e) => {
+            if (!drag) return;
+            panel.style.left = Math.max(0, Math.min(e.clientX - dx, window.innerWidth - panel.offsetWidth)) + "px";
+            panel.style.top = Math.max(0, Math.min(e.clientY - dy, window.innerHeight - panel.offsetHeight)) + "px";
+        });
+        const end = (e) => { if (drag) { drag = false; try { title.releasePointerCapture(e.pointerId); } catch (_) {} } };
+        title.addEventListener("pointerup", end);
+        title.addEventListener("pointercancel", end);
+    }
+}
+// パネルの位置・サイズを localStorage に記憶（ドラッグ移動／リサイズのタイミングで保存、起動時に復元）。
+function persistPanelGeometry(id, key) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    try {
+        const s = JSON.parse(localStorage.getItem(key));
+        if (s) {
+            if (typeof s.left === "number") { el.style.left = s.left + "px"; el.style.right = "auto"; }
+            if (typeof s.top === "number") el.style.top = s.top + "px";
+            if (typeof s.w === "number") el.style.width = s.w + "px";
+            if (typeof s.h === "number") el.style.height = s.h + "px";
+        }
+    } catch (_) { /* defaults */ }
+    const save = () => {
+        if (el.hidden) return; // 非表示時は rect が 0 -> 保存しない
+        const r = el.getBoundingClientRect();
+        if (r.width < 1 || r.height < 1) return;
+        localStorage.setItem(key, JSON.stringify({ left: Math.round(r.left), top: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) }));
+    };
+    try { new ResizeObserver(() => save()).observe(el); } catch (_) {} // サイズ変更時
+    const title = el.querySelector(".ep-title");
+    if (title) { title.addEventListener("pointerup", save); title.addEventListener("pointercancel", save); } // ドラッグ終了時
+}
+setupFloatingPanel("camera-panel", "camera-panel-close");
+
+// 配置モデル＋ボーンツリーの統合ウィンドウ（close + drag）。
+setupFloatingPanel("scene-panel", "scene-panel-close");
+
+// 矢印(選択)モード: ビューでモデルをクリックしてアクティブ機体を切り替える。
+// ボーン編集ON中は無効（クリックはボーン操作に使うため）。ドラッグ(カメラ回転)は除外。
+(function setupModelClickSelect() {
+    const ray = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    let downX = 0, downY = 0, downBtn = -1;
+    canvasEl.addEventListener("pointerdown", (e) => { downX = e.clientX; downY = e.clientY; downBtn = e.button; });
+    canvasEl.addEventListener("pointerup", (e) => {
+        if (boneEditEnabled || e.button !== 0 || downBtn !== 0) return;       // 矢印モード＋左クリックのみ
+        if (Math.hypot(e.clientX - downX, e.clientY - downY) > 5) return;     // ドラッグ(回転)は無視
+        if (!loadedModels.length) return;
+        const rect = canvasEl.getBoundingClientRect();
+        ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        ray.setFromCamera(ndc, camera);
+        let best = null, bestDist = Infinity;
+        for (const ent of loadedModels) {
+            const hits = ray.intersectObject(ent.model, true);
+            if (hits.length && hits[0].distance < bestDist) { bestDist = hits[0].distance; best = ent; }
+        }
+        if (best && best.root !== modelRoot) { activateModel(best); setStatus(`選択: ${best.name}`); }
+    });
+})();
+
+// ---- ボーンツリー: アクティブモデルのボーン階層＋ローカル回転(度)を表示 ----
+const boneTreePanel = document.getElementById("scene-panel"); // bone tree lives in the merged panel
+let _boneTreeRows = []; // [{ bone, val, handle, row }]
+let _rawToHandle = new Map(); // raw bone node -> FK handle (editable/selectable/lockable)
+let _btChildren = new Map();  // editable bone -> [editable child bones] (for subtree lock)
+let _btTick = 0;
+
+// Collect a bone + all its editable descendants (null = every editable bone).
+function btSubtree(bone) {
+    if (!bone) return null;
+    const set = new Set(); const stack = [bone];
+    while (stack.length) { const b = stack.pop(); set.add(b); for (const c of (_btChildren.get(b) || [])) stack.push(c); }
+    return set;
+}
+// Lock (or unlock) a bone's whole subtree (null = all). locked=true -> uncheck/lock.
+function setSubtreeLocked(bone, locked) {
+    const set = btSubtree(bone);
+    for (const { bone: b, handle, cb } of _boneTreeRows) {
+        if (!handle || (set && !set.has(b))) continue;
+        if (locked) { lockedBones.add(handle.bone); if (selectedFK && selectedFK.bone === handle.bone) deselectFK(); }
+        else lockedBones.delete(handle.bone);
+        if (cb) cb.checked = !locked;
+    }
+    setEditVisible(_editVisible);
+}
+function showBoneTreeMenu(x, y, bone) {
+    ctxMenu.textContent = "";
+    addCtxItem((bone ? (bone.name || "bone") : "全ボーン") + " 配下", null, true);
+    addCtxItem("すべて選択（編集可）", () => setSubtreeLocked(bone, false));
+    addCtxItem("すべて非選択（ロック）", () => setSubtreeLocked(bone, true));
+    ctxMenu.style.display = "block";
+    ctxMenu.style.left = Math.min(x, window.innerWidth - ctxMenu.offsetWidth - 4) + "px";
+    ctxMenu.style.top = Math.min(y, window.innerHeight - ctxMenu.offsetHeight - 4) + "px";
+}
+// Every node here is an editable (control-point) bone; non-control bones are omitted.
+function renderBoneNode(bone, childrenMap) {
+    const handle = _rawToHandle.get(bone);
+    const li = document.createElement("li");
+    const row = document.createElement("div"); row.className = "bt-row";
+    const kids = childrenMap.get(bone) || [];
+    // lock checkbox: checked = editable, unchecked = locked (not selectable, angle fixed).
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.className = "bt-lock"; cb.checked = !lockedBones.has(handle.bone);
+    cb.title = "編集可（外すと選択不可・角度固定）";
+    cb.addEventListener("change", () => {
+        if (cb.checked) lockedBones.delete(handle.bone);
+        else { lockedBones.add(handle.bone); if (selectedFK && selectedFK.bone === handle.bone) deselectFK(); }
+        setEditVisible(_editVisible); // reapply: show/hide this bone's control point
+    });
+    row.appendChild(cb);
+    const tog = document.createElement("span"); tog.className = "bt-tog";
+    if (kids.length) {
+        tog.textContent = "▾"; tog.style.cursor = "pointer";
+        tog.addEventListener("click", () => { li.classList.toggle("collapsed"); tog.textContent = li.classList.contains("collapsed") ? "▸" : "▾"; });
+    } else tog.textContent = "・";
+    const name = document.createElement("span"); name.className = "bt-name bt-sel"; name.textContent = bone.name || "(bone)";
+    name.title = "クリックで選択";
+    name.addEventListener("click", () => { if (!lockedBones.has(handle.bone)) selectFK(handle); }); // tree -> view sync
+    const val = document.createElement("span"); val.className = "bt-val";
+    row.append(tog, name, val);
+    row.addEventListener("contextmenu", (e) => { e.preventDefault(); e.stopPropagation(); showBoneTreeMenu(e.clientX, e.clientY, bone); }); // 配下一括ロック
+    li.appendChild(row);
+    _boneTreeRows.push({ bone, val, handle, row, cb });
+    if (kids.length) {
+        const ul = document.createElement("ul");
+        for (const c of kids) ul.appendChild(renderBoneNode(c, childrenMap));
+        li.appendChild(ul);
+    }
+    return li;
+}
+function buildBoneTree() {
+    const body = document.getElementById("bone-tree-body");
+    if (!body || !boneTreePanel || boneTreePanel.hidden) return; // only when the window is open
+    _boneTreeRows = [];
+    body.innerHTML = "";
+    // map each FK handle's raw bone -> handle (control-point bones only)
+    _rawToHandle = new Map();
+    const hum = currentVRM?.humanoid;
+    if (hum) for (const h of boneHandles) { const raw = h.name && hum.getRawBoneNode(h.name); if (raw) _rawToHandle.set(raw, h); }
+    if (!_rawToHandle.size) { body.innerHTML = '<div class="bt-empty">制御点ボーンがありません</div>'; return; }
+    // nest editable bones under their nearest editable ancestor
+    const parentEditable = (bone) => { let p = bone.parent; while (p) { if (_rawToHandle.has(p)) return p; p = p.parent; } return null; };
+    const childrenMap = new Map();
+    const roots = [];
+    for (const b of _rawToHandle.keys()) {
+        const pe = parentEditable(b);
+        if (pe) { (childrenMap.get(pe) || childrenMap.set(pe, []).get(pe)).push(b); }
+        else roots.push(b);
+    }
+    _btChildren = childrenMap;
+    // No single bone root (hips isn't an FK handle) -> use the model name as the root.
+    const modelName = (loadedModels.find((e) => e.root === modelRoot)?.name) || "model";
+    const rootLi = document.createElement("li");
+    const rootRow = document.createElement("div"); rootRow.className = "bt-row";
+    const sp = document.createElement("span"); sp.className = "bt-lock-spacer";
+    const rtog = document.createElement("span"); rtog.className = "bt-tog"; rtog.textContent = "▾"; rtog.style.cursor = "pointer";
+    rtog.addEventListener("click", () => { rootLi.classList.toggle("collapsed"); rtog.textContent = rootLi.classList.contains("collapsed") ? "▸" : "▾"; });
+    const rname = document.createElement("span"); rname.className = "bt-name bt-root"; rname.textContent = modelName;
+    rootRow.append(sp, rtog, rname);
+    rootRow.addEventListener("contextmenu", (e) => { e.preventDefault(); e.stopPropagation(); showBoneTreeMenu(e.clientX, e.clientY, null); }); // 全ボーン一括
+    rootLi.appendChild(rootRow);
+    const childUl = document.createElement("ul");
+    for (const r of roots) childUl.appendChild(renderBoneNode(r, childrenMap));
+    rootLi.appendChild(childUl);
+    const ul = document.createElement("ul");
+    ul.appendChild(rootLi);
+    body.appendChild(ul);
+    updateBoneTreeValues();
+}
+function updateBoneTreeValues() {
+    if (!_boneTreeRows.length) return;
+    const d = (r) => Math.round(THREE.MathUtils.radToDeg(r));
+    const selBone = selectedFK ? selectedFK.bone : null;
+    for (const { bone, val, handle, row } of _boneTreeRows) {
+        const e = bone.rotation;
+        val.textContent = `(${d(e.x)}, ${d(e.y)}, ${d(e.z)})`;
+        if (handle) row.classList.toggle("bt-active", handle.bone === selBone); // view -> tree sync
+    }
+}
+(function setupBoneTreePanel() {
+    if (!boneTreePanel) return; // close/drag wired via setupFloatingPanel("scene-panel")
+    const reload = document.getElementById("bone-tree-reload");
+    if (reload) reload.addEventListener("click", buildBoneTree);
+    // Rebuild the tree when the merged window is shown.
+    new MutationObserver(() => { if (!boneTreePanel.hidden) buildBoneTree(); }).observe(boneTreePanel, { attributes: true, attributeFilter: ["hidden"] });
+})();
+
+(function setupModelLibrary() {
+    const modal = document.getElementById("model-modal");
+    if (!modal) return;
+    const body = modal.querySelector(".pl-body");
+    const reloadBtn = document.getElementById("model-reload");
+    const openBtns = [document.getElementById("model-open-btn")]; // モデル ▾ → モデルを追加
+    const openModal = () => { modal.hidden = false; load(); };
+    const closeModal = () => { modal.hidden = true; };
+    const addBtn = document.getElementById("model-add");
+    const closeFootBtn = document.getElementById("model-close-btn");
+    let currentModels = [];          // models in the current listing
+    const selected = new Set();      // selected file names (multi-select)
+    const updateAddBtn = () => { if (addBtn) addBtn.disabled = selected.size === 0; }; // 無選択時は無効(グレー)
+
+    // 表示モード: OFF = 全身レンダリング / ON = VRM内蔵サムネイル（顔）。状態は保存。
+    const modeCheck = document.getElementById("model-embedded-mode");
+    const THUMB_MODE_KEY = "vrmSceneEditor.thumbMode";
+    if (modeCheck) modeCheck.checked = localStorage.getItem(THUMB_MODE_KEY) !== "render"; // 既定ON(内蔵サムネ)
+    const embeddedMode = () => !!(modeCheck && modeCheck.checked);
+    const embeddedUrl = (file) => "/vrm-scene-editor/thumbnail?file=" + encodeURIComponent(file);
+    const savedThumbUrl = (thumb) => "/vrm-scene-models/" + encodeURIComponent(MODEL_SUBDIR) + "/" + encodeURIComponent(thumb);
+    function saveThumb(file, dataURL) { // persist a fresh render as <name>.png for reuse
+        fetch("/vrm-scene-editor/save-thumbnail", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ file, image: dataURL }),
+        }).catch(() => {});
+    }
+
+    // Render thumbnails one at a time, only for cards scrolled into view.
+    const queue = [];
+    let rendering = false;
+    async function pump() {
+        if (rendering) return;
+        rendering = true;
+        while (queue.length) {
+            const el = queue.shift();
+            if (!el.isConnected) continue;
+            const file = el.dataset.file;
+            let url = _thumbCache.get(file), fresh = false;
+            if (!url) { url = await renderThumb(file); fresh = true; }
+            if (!el.isConnected) continue;
+            if (url) {
+                const img = document.createElement("img");
+                img.className = "ml-thumb"; img.alt = ""; img.src = url;
+                el.replaceWith(img);
+                if (fresh) saveThumb(file, url); // save <name>.png so next time it's reused
+            } else { el.textContent = "No Image"; el.classList.remove("ml-pending"); }
+        }
+        rendering = false;
+    }
+    const io = new IntersectionObserver((entries) => {
+        for (const e of entries) if (e.isIntersecting) { io.unobserve(e.target); queue.push(e.target); pump(); }
+    }, { root: body, rootMargin: "150px" });
+
+    async function load() {
+        io.disconnect(); queue.length = 0;
+        body.innerHTML = '<div class="pl-empty">読込中 ...</div>';
+        let data;
+        try {
+            const res = await fetch("/vrm-scene-editor/models");
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            data = await res.json();
+        } catch (e) {
+            body.innerHTML = `<div class="pl-empty">一覧の取得に失敗しました (${e.message})<br>ComfyUI の再起動が必要かもしれません</div>`;
+            return;
+        }
+        const models = data.models ?? [];
+        currentModels = models; selected.clear(); updateAddBtn();
+        if (!models.length) {
+            body.innerHTML = '<div class="pl-empty">models/vrm にファイルがありません</div>';
+            return;
+        }
+        body.innerHTML = "";
+        for (const m of models) {
+            const card = document.createElement("button");
+            card.type = "button"; card.className = "ml-card"; card.title = m.file;
+            let thumbEl;
+            if (embeddedMode()) {
+                // VRM内蔵サムネイル（顔）
+                thumbEl = document.createElement("img"); thumbEl.className = "ml-thumb"; thumbEl.alt = ""; thumbEl.src = embeddedUrl(m.file);
+                thumbEl.addEventListener("error", () => { const ph = document.createElement("div"); ph.className = "ml-noimg"; ph.textContent = "No Image"; thumbEl.replaceWith(ph); });
+            } else if (m.thumb) {
+                // 保存済みの全身レンダ（<name>.png）を再利用
+                thumbEl = document.createElement("img"); thumbEl.className = "ml-thumb"; thumbEl.alt = ""; thumbEl.src = savedThumbUrl(m.thumb);
+            } else if (_thumbCache.get(m.file)) {
+                thumbEl = document.createElement("img"); thumbEl.className = "ml-thumb"; thumbEl.alt = ""; thumbEl.src = _thumbCache.get(m.file);
+            } else {
+                thumbEl = document.createElement("div"); thumbEl.className = "ml-noimg ml-pending"; thumbEl.textContent = "…";
+                thumbEl.dataset.file = m.file;
+                io.observe(thumbEl); // render when scrolled into view, then save
+            }
+            const nm = document.createElement("span"); nm.className = "ml-name"; nm.textContent = m.name;
+            card.append(thumbEl, nm);
+            card.addEventListener("click", () => { // クリックで選択トグル（複数選択可）
+                if (selected.has(m.file)) { selected.delete(m.file); card.classList.remove("selected"); }
+                else { selected.add(m.file); card.classList.add("selected"); }
+                updateAddBtn();
+            });
+            body.appendChild(card);
+        }
+    }
+
+    if (reloadBtn) reloadBtn.addEventListener("click", load);
+    if (modeCheck) modeCheck.addEventListener("change", () => {
+        localStorage.setItem(THUMB_MODE_KEY, modeCheck.checked ? "embedded" : "render");
+        load();
+    });
+    // 追加: 選択中のモデルをすべて読み込み、ロード完了後にダイアログを閉じる。
+    if (addBtn) addBtn.addEventListener("click", async () => {
+        const chosen = currentModels.filter((m) => selected.has(m.file));
+        if (!chosen.length) { setStatus("モデルを選択してください"); return; }
+        addBtn.disabled = true;
+        setStatus(`読込中 ... (${chosen.length})`);
+        await Promise.all(chosen.map((m) => loadModelFromLibrary(m, true)));
+        selected.clear();
+        updateAddBtn();
+        closeModal();
+    });
+    if (closeFootBtn) closeFootBtn.addEventListener("click", closeModal);
+    for (const b of openBtns) if (b) b.addEventListener("click", openModal);
+    // Close on the × button or a click on the dimmed backdrop (but not the card).
+    modal.addEventListener("click", (e) => { if (e.target === modal || e.target.closest("[data-close]")) closeModal(); });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !modal.hidden) closeModal(); });
+})();
+
+// ---- ポーズサムネ: 同梱サンプルをフラット青のマネキンにして、ポーズを当てて撮影 ----
+const POSE_THUMB_SIZE = 96, POSE_THUMB_QUALITY = 0.72;
+let _poseThumbR = null, _poseThumbScene = null, _poseThumbCam = null, _poseMannequin = null, _poseMannequinLoading = null;
+function _initPoseThumb() {
+    if (_poseThumbR) return;
+    _poseThumbR = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true });
+    _poseThumbR.setPixelRatio(1);
+    _poseThumbR.setSize(POSE_THUMB_SIZE, POSE_THUMB_SIZE, false);
+    _poseThumbR.outputColorSpace = THREE.SRGBColorSpace;
+    _poseThumbR.setClearColor(0x1a1a1a, 1);
+    _poseThumbScene = new THREE.Scene();
+    _poseThumbScene.add(new THREE.HemisphereLight(0xffffff, 0x333344, 1.4));
+    const d = new THREE.DirectionalLight(0xffffff, 1.1); d.position.set(1, 2, 2); _poseThumbScene.add(d);
+    _poseThumbScene.overrideMaterial = new THREE.MeshStandardMaterial({ color: 0x3f7fd0, roughness: 0.65, metalness: 0.0 }); // ブルーマン風
+    _poseThumbCam = new THREE.PerspectiveCamera(30, 1, 0.01, 100);
+}
+function loadPoseMannequin() {
+    if (_poseMannequin) return Promise.resolve(_poseMannequin);
+    if (_poseMannequinLoading) return _poseMannequinLoading;
+    _initPoseThumb();
+    _poseMannequinLoading = new Promise((resolve) => {
+        loader.load(DEFAULT_MODEL_URL, (gltf) => {
+            const vrm = gltf.userData.vrm;
+            if (!vrm) { resolve(null); return; }
+            VRMUtils.rotateVRM0(vrm); // face +Z
+            _poseThumbScene.add(vrm.scene);
+            vrm.scene.updateWorldMatrix(true, true);
+            _poseMannequin = vrm;
+            resolve(vrm);
+        }, undefined, () => resolve(null));
+    });
+    return _poseMannequinLoading;
+}
+function _framePoseCam(vrm) {
+    const box = new THREE.Box3().setFromObject(vrm.scene);
+    const size = new THREE.Vector3(); box.getSize(size);
+    const center = new THREE.Vector3(); box.getCenter(center);
+    const fov = THREE.MathUtils.degToRad(_poseThumbCam.fov);
+    const distH = (size.y / 2) / Math.tan(fov / 2);
+    const distW = (size.x / 2) / (Math.tan(fov / 2) * _poseThumbCam.aspect);
+    const dist = Math.max(distH, distW) * 1.12 + size.z;
+    _poseThumbCam.position.set(center.x, center.y, center.z + dist);
+    _poseThumbCam.lookAt(center.x, center.y, center.z);
+    _poseThumbCam.updateProjectionMatrix();
+}
+async function renderPoseThumb(poseText) {
+    const vrm = await loadPoseMannequin();
+    if (!vrm) return "";
+    let parsed; try { parsed = JSON.parse(poseText); } catch (_) { return ""; }
+    // 前のポーズが残らないよう、対象ボーンを rest(=identity) に戻してから適用
+    for (const vrmKey of Object.values(VROID_TO_VRM)) { const n = vrm.humanoid.getNormalizedBoneNode(vrmKey); if (n) n.quaternion.identity(); }
+    applyVroidPoseBones(vrm, parsed);
+    vrm.humanoid.update();
+    vrm.scene.updateWorldMatrix(true, true);
+    _framePoseCam(vrm);
+    let url = "";
+    try { _poseThumbR.render(_poseThumbScene, _poseThumbCam); url = _poseThumbR.domElement.toDataURL("image/jpeg", POSE_THUMB_QUALITY); } catch (_) {}
+    return url;
+}
+
 (function setupPoseLibrary() {
     const panel = document.getElementById("pose-lib-panel");
     if (!panel) return;
-    const body = panel.querySelector(".pl-body");
+    const grid = document.getElementById("pose-lib-grid");
+    const countEl = document.getElementById("pose-lib-count");
     const reloadBtn = document.getElementById("pose-lib-reload");
+    const delBtn = document.getElementById("pose-lib-del");
     const closeBtn = document.getElementById("pose-lib-close");
+    let poses = [];
+    let selectedPose = -1;
+    const poseThumbUrl = (thumb) => "/vrm-scene-models/pose/" + encodeURIComponent(thumb);
+
+    const updateStatus = () => {
+        if (countEl) countEl.textContent = `${poses.length}件`;
+        if (delBtn) delBtn.disabled = selectedPose < 0;
+    };
+
+    // 未生成サムネを順番に描画→保存（同梱サンプルのフラット青マネキン）
+    const thumbQueue = [];
+    let thumbing = false;
+    async function pumpThumbs() {
+        if (thumbing) return; thumbing = true;
+        while (thumbQueue.length) {
+            const { p, imgEl } = thumbQueue.shift();
+            if (!imgEl.isConnected) continue;
+            let text;
+            try {
+                const res = await fetch("/vrm-scene-editor/pose?file=" + encodeURIComponent(p.file));
+                if (!res.ok) throw new Error("HTTP " + res.status);
+                text = await res.text();
+            } catch (_) { continue; }
+            const url = await renderPoseThumb(text);
+            if (!url || !imgEl.isConnected) continue;
+            imgEl.src = url;
+            fetch("/vrm-scene-editor/save-pose-thumbnail", { // 次回から即表示
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ file: p.file, image: url }),
+            }).catch(() => {});
+        }
+        thumbing = false;
+    }
 
     async function load() {
-        body.innerHTML = '<div class="pl-empty">読込中 ...</div>';
+        thumbQueue.length = 0;
+        grid.innerHTML = '<div class="plib-empty">読込中 ...</div>';
+        selectedPose = -1;
         let data;
         try {
             const res = await fetch("/vrm-scene-editor/poses");
             if (!res.ok) throw new Error("HTTP " + res.status);
             data = await res.json();
         } catch (_) {
-            body.innerHTML = '<div class="pl-empty">一覧の取得に失敗しました</div>';
+            grid.innerHTML = '<div class="plib-empty">一覧の取得に失敗しました</div>';
             return;
         }
-        const poses = data.poses ?? [];
-        if (!poses.length) {
-            body.innerHTML = '<div class="pl-empty">pose フォルダにファイルがありません</div>';
-            return;
-        }
-        body.innerHTML = "";
-        for (const p of poses) {
-            const btn = document.createElement("button");
-            btn.type = "button";
-            btn.className = "pl-item";
-            btn.title = p.file;
-            const nm = document.createElement("span"); nm.textContent = p.name;
-            const ex = document.createElement("span"); ex.className = "pl-ext"; ex.textContent = p.ext;
-            btn.append(nm, ex);
-            btn.addEventListener("click", () => applyFile(p));
-            body.appendChild(btn);
-        }
+        poses = data.poses ?? [];
+        updateStatus();
+        if (!poses.length) { grid.innerHTML = '<div class="plib-empty">models/pose にファイルがありません</div>'; return; }
+        grid.innerHTML = "";
+        poses.forEach((p, idx) => {
+            const card = document.createElement("div"); card.className = "plib-card"; card.title = p.file;
+            const img = document.createElement("img"); img.className = "plib-thumb"; img.alt = "";
+            if (p.thumb) img.src = poseThumbUrl(p.thumb) + "?t=" + Date.now(); // 保存済みサムネ
+            else thumbQueue.push({ p, imgEl: img });                          // 未生成→後で描画＆保存
+            const nm = document.createElement("span"); nm.className = "plib-name"; nm.textContent = p.name;
+            card.append(img, nm);
+            card.addEventListener("click", () => {
+                selectedPose = idx;
+                for (const c of grid.querySelectorAll(".plib-card.selected")) c.classList.remove("selected");
+                card.classList.add("selected"); updateStatus();
+            });
+            card.addEventListener("dblclick", () => applyFile(p)); // ダブルクリックで適用
+            grid.appendChild(card);
+        });
+        pumpThumbs();
     }
 
     async function applyFile(p) {
@@ -2199,14 +2800,29 @@ function applyVroidPose(poseText) {
             const res = await fetch("/vrm-scene-editor/pose?file=" + encodeURIComponent(p.file));
             if (!res.ok) throw new Error("HTTP " + res.status);
             text = await res.text();
-        } catch (_) {
-            showToast("ポーズの読込に失敗しました", "error", 2500);
-            return;
-        }
+        } catch (_) { showToast("ポーズの読込に失敗しました", "error", 2500); return; }
         if (applyVroidPose(text)) showToast(`ポーズ適用: ${p.name}`, "info", 2000);
     }
 
+    function deleteSelected() {
+        if (selectedPose < 0) return;
+        const p = poses[selectedPose]; if (!p) return;
+        confirmDialog(`ポーズ「${p.name}」を削除しますか？`, async () => {
+            try {
+                const res = await fetch("/vrm-scene-editor/delete-pose", {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ file: p.file }),
+                });
+                const r = await res.json();
+                if (!res.ok) throw new Error(r.error || res.status);
+                showToast(`ポーズ削除: ${p.name}`, "success", 2000);
+                load();
+            } catch (e) { showToast(`削除失敗: ${e.message || e}`, "error", 3000); }
+        });
+    }
+
     if (reloadBtn) reloadBtn.addEventListener("click", load);
+    if (delBtn) delBtn.addEventListener("click", deleteSelected);
     if (closeBtn) closeBtn.addEventListener("click", () => { panel.hidden = true; });
 
     // draggable title (mirror the 手のポーズ panel)
@@ -2441,50 +3057,130 @@ if (pvPanel) {
 // backend so the ComfyUI "VRM Scene Capture" node can pick it up by camera + type.
 // Types so far: image (RGB), mask (white silhouette), depth (near=white),
 // normal (view-space). canny/openpose come later.
-const TYPES_KEY = "vrmSceneEditor.types";
-const TYPE_INPUTS = {
-    image: typeImageInput,
-    mask: typeMaskInput,
-    "mask(hands)": typeMaskHandsInput,
-    depth: typeDepthInput,
-    normal: typeNormalInput,
-    "openpose(body)": typeOpenposeBodyInput,
-    "openpose(hands)": typeOpenposeHandsInput,
-    "openpose(body+hands)": typeOpenposeBodyHandsInput,
-};
-
-function selectedTypes() {
-    return Object.keys(TYPE_INPUTS).filter((t) => TYPE_INPUTS[t].checked);
-}
-
-(function restoreTypes() {
-    try {
-        const saved = JSON.parse(localStorage.getItem(TYPES_KEY) || "null");
-        if (saved) {
-            for (const t of Object.keys(TYPE_INPUTS)) TYPE_INPUTS[t].checked = !!saved[t];
-        }
-    } catch { /* keep HTML defaults */ }
-})();
-
-function saveTypes() {
-    const state = {};
-    for (const t of Object.keys(TYPE_INPUTS)) state[t] = TYPE_INPUTS[t].checked;
-    localStorage.setItem(TYPES_KEY, JSON.stringify(state));
-}
-for (const t of Object.keys(TYPE_INPUTS)) TYPE_INPUTS[t].addEventListener("change", saveTypes);
-
-// Preview combo: same types as capture (select which type overlays the image).
-if (previewType) {
-    for (const t of Object.keys(TYPE_INPUTS)) {
-        const opt = document.createElement("option");
-        opt.value = t;
-        opt.textContent = t;
-        previewType.appendChild(opt);
+// ---- カメラ設定 (camera1..9): 各カメラ = 表示モード(出力タイプ) + 含めるモデル ----
+const OUTPUT_TYPES = ["image", "mask", "mask(hands)", "seg", "depth", "normal", "openpose(body)", "openpose(hands)", "openpose(body+hands)"];
+const CAMERA_LIST = Array.from({ length: 9 }, (_, i) => `camera${i + 1}`);
+const CAM_KEY = "vrmSceneEditor.cameras";
+const CAM_ACTIVE_KEY = "vrmSceneEditor.activeCamera";
+const cameraConfigs = {};
+// 各カメラ = { enabled: 撮影対象か, types: 表示モード(複数), exclude: 除外モデルid }
+for (const c of CAMERA_LIST) cameraConfigs[c] = { enabled: c === "camera1", types: ["image"], exclude: [] };
+try {
+    const s = JSON.parse(localStorage.getItem(CAM_KEY) || "null");
+    if (s) for (const c of CAMERA_LIST) if (s[c]) {
+        const o = s[c];
+        cameraConfigs[c] = {
+            enabled: typeof o.enabled === "boolean" ? o.enabled : (c === "camera1"),
+            types: Array.isArray(o.types) ? o.types.filter((t) => OUTPUT_TYPES.includes(t))
+                : (o.type && OUTPUT_TYPES.includes(o.type) ? [o.type] : ["image"]),
+            exclude: Array.isArray(o.exclude) ? o.exclude : [],
+        };
+        if (!cameraConfigs[c].types.length) cameraConfigs[c].types = ["image"];
     }
-    previewType.value = "openpose(body)";
-    previewType.addEventListener("change", renderFramePreview);
+} catch { /* defaults */ }
+let activeCamera = CAMERA_LIST.includes(localStorage.getItem(CAM_ACTIVE_KEY)) ? localStorage.getItem(CAM_ACTIVE_KEY) : "camera1";
+function saveCameras() { localStorage.setItem(CAM_KEY, JSON.stringify(cameraConfigs)); localStorage.setItem(CAM_ACTIVE_KEY, activeCamera); }
+// プレビューで表示する表示モード（カメラの選択タイプ内から選ぶ）
+let _previewType = "image";
+function previewType() { return _previewType; }
+
+const cameraSelect = document.getElementById("camera-select");
+const cameraEnabled = document.getElementById("camera-enabled");
+const cameraTypesBox = document.getElementById("camera-types");
+const cameraModelsBox = document.getElementById("camera-models");
+const previewCamera = document.getElementById("preview-camera");
+const previewTypeSel = document.getElementById("preview-type");
+
+// プレビューの表示モード選択肢を、アクティブカメラの選択タイプから作り直す
+function rebuildPreviewTypeOptions() {
+    if (!previewTypeSel) return;
+    const types = cameraConfigs[activeCamera]?.types?.length ? cameraConfigs[activeCamera].types : ["image"];
+    if (!types.includes(_previewType)) _previewType = types[0];
+    previewTypeSel.innerHTML = "";
+    for (const t of types) { const o = document.createElement("option"); o.value = t; o.textContent = t; previewTypeSel.appendChild(o); }
+    previewTypeSel.value = _previewType;
 }
-if (previewShowImage) previewShowImage.addEventListener("change", renderFramePreview);
+
+const _fillSelect = (sel, items, val) => {
+    if (!sel) return;
+    sel.innerHTML = "";
+    for (const v of items) { const o = document.createElement("option"); o.value = v; o.textContent = v; sel.appendChild(o); }
+    sel.value = val;
+};
+function rebuildCameraTypeChecks() {
+    if (!cameraTypesBox) return;
+    cameraTypesBox.innerHTML = "";
+    const sel = new Set(cameraConfigs[activeCamera].types);
+    for (const t of OUTPUT_TYPES) {
+        const label = document.createElement("label");
+        const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = sel.has(t);
+        cb.addEventListener("change", () => {
+            const set = new Set(cameraConfigs[activeCamera].types);
+            if (cb.checked) set.add(t); else set.delete(t);
+            let types = OUTPUT_TYPES.filter((x) => set.has(x)); // 元の順序を維持
+            if (!types.length) { types = ["image"]; rebuildCameraTypeChecks(); } // 最低1つ
+            cameraConfigs[activeCamera].types = types;
+            saveCameras(); rebuildPreviewTypeOptions(); renderFramePreview();
+        });
+        const span = document.createElement("span"); span.textContent = t;
+        label.append(cb, span);
+        cameraTypesBox.appendChild(label);
+    }
+}
+function rebuildCameraModelChecks() {
+    if (!cameraModelsBox) return;
+    cameraModelsBox.innerHTML = "";
+    if (!loadedModels.length) { cameraModelsBox.innerHTML = '<div class="cam-empty">モデルがありません</div>'; return; }
+    const ex = new Set(cameraConfigs[activeCamera].exclude);
+    for (const e of loadedModels) {
+        const label = document.createElement("label");
+        const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = !ex.has(e.id);
+        cb.addEventListener("change", () => {
+            const set = new Set(cameraConfigs[activeCamera].exclude);
+            if (cb.checked) set.delete(e.id); else set.add(e.id);
+            cameraConfigs[activeCamera].exclude = [...set];
+            saveCameras(); renderFramePreview();
+        });
+        const span = document.createElement("span"); span.textContent = e.name;
+        label.append(cb, span);
+        cameraModelsBox.appendChild(label);
+    }
+}
+function syncCameraUI() {
+    if (cameraSelect) cameraSelect.value = activeCamera;
+    if (previewCamera) previewCamera.value = activeCamera;
+    if (cameraEnabled) cameraEnabled.checked = !!cameraConfigs[activeCamera].enabled;
+    rebuildCameraTypeChecks();
+    rebuildPreviewTypeOptions();
+    rebuildCameraModelChecks();
+}
+function setActiveCamera(cam) {
+    if (!CAMERA_LIST.includes(cam)) return;
+    activeCamera = cam;
+    saveCameras(); syncCameraUI(); renderFramePreview();
+}
+// Hide models excluded from `cam` during a render; returns a restore fn.
+function hideExcludedModels(cam) {
+    const ex = new Set(cameraConfigs[cam]?.exclude || []);
+    const saved = loadedModels.map((e) => [e.root, e.root.visible]);
+    for (const e of loadedModels) e.root.visible = !ex.has(e.id) && e.visible !== false; // also honor 表示/非表示
+    return () => { for (const [r, v] of saved) r.visible = v; };
+}
+// VRMs included in the active camera (for OpenPose, which draws per-VRM keypoints).
+function cameraVRMs() {
+    const ex = new Set(cameraConfigs[activeCamera]?.exclude || []);
+    return loadedModels.filter((e) => e.vrm && e.vrm.humanoid && !ex.has(e.id)).map((e) => e.vrm);
+}
+
+_fillSelect(cameraSelect, CAMERA_LIST, activeCamera);
+_fillSelect(previewCamera, CAMERA_LIST, activeCamera);
+syncCameraUI();
+if (cameraSelect) cameraSelect.addEventListener("change", () => setActiveCamera(cameraSelect.value));
+if (previewCamera) previewCamera.addEventListener("change", () => setActiveCamera(previewCamera.value));
+if (previewTypeSel) previewTypeSel.addEventListener("change", () => { _previewType = previewTypeSel.value; renderFramePreview(); });
+if (cameraEnabled) cameraEnabled.addEventListener("change", () => {
+    cameraConfigs[activeCamera].enabled = cameraEnabled.checked; saveCameras();
+});
 
 const MASK_BG = new THREE.Color(0x000000);
 
@@ -2527,6 +3223,64 @@ const HAND_MASK_MATERIAL = new THREE.ShaderMaterial({
 // MeshNormalMaterial flips backface normals (gl_FrontFacing) so the nearest
 // surface gets a correct camera-facing normal.
 const NORMAL_MATERIAL = new THREE.MeshNormalMaterial({ side: THREE.DoubleSide });
+
+// "seg": 体と手を塗り分けるセグメンテーション。頂点の aHand（手ボーン支配=1）で
+// 体色/手色を選ぶ。色はモデルごとに割り当て（uniformで差し替え、1体ずつ重ね描き）。
+const SEG_MATERIAL = new THREE.ShaderMaterial({
+    side: THREE.DoubleSide,
+    uniforms: { uBody: { value: new THREE.Color(0.25, 0.5, 0.9) }, uHand: { value: new THREE.Color(0.6, 0.8, 1.0) } },
+    vertexShader: `
+        #include <common>
+        #include <skinning_pars_vertex>
+        attribute float aHand;
+        varying float vHand;
+        void main() {
+            vHand = aHand;
+            #include <skinbase_vertex>
+            #include <begin_vertex>
+            #include <skinning_vertex>
+            #include <project_vertex>
+        }
+    `,
+    fragmentShader: `
+        uniform vec3 uBody;
+        uniform vec3 uHand;
+        varying float vHand;
+        void main() {
+            gl_FragColor = vec4(vHand > 0.5 ? uHand : uBody, 1.0);
+        }
+    `,
+});
+// モデル順 i に色相を割り当て、体=濃いめ/手=明るめ。色数=含めるモデル数×2。
+const _segBody = new THREE.Color(), _segHand = new THREE.Color();
+function segColors(i) {
+    const hue = ((i * 137.508) % 360) / 360; // ゴールデンアングルで被りにくく
+    _segBody.setHSL(hue, 0.62, 0.42);
+    _segHand.setHSL(hue, 0.85, 0.66);
+    return { body: _segBody, hand: _segHand };
+}
+// 現在表示中（カメラの「含めるモデル」で可視）のモデルを1体ずつ、それぞれの体色/手色で
+// 重ね描きする。深度は一度だけクリアして以降ためるので、前後の隠れも正しく出る。
+function renderSeg() {
+    const entries = loadedModels.filter((e) => e.root.visible); // 含める=可視（呼び出し側で適用済み）
+    scene.overrideMaterial = SEG_MATERIAL;
+    scene.background = null;
+    grid.visible = false;
+    renderer.setClearColor(0x000000, 1);
+    const prevVis = loadedModels.map((e) => e.root.visible);
+    const prevAutoClear = renderer.autoClear;
+    renderer.autoClear = false;
+    renderer.clear();
+    entries.forEach((e, i) => {
+        const c = segColors(i);
+        SEG_MATERIAL.uniforms.uBody.value.copy(c.body);
+        SEG_MATERIAL.uniforms.uHand.value.copy(c.hand);
+        for (const x of loadedModels) x.root.visible = (x === e); // この1体だけ描く
+        renderer.render(scene, camera);
+    });
+    renderer.autoClear = prevAutoClear;
+    loadedModels.forEach((e, idx) => { e.root.visible = prevVis[idx]; });
+}
 
 // Linear-depth material, normalized over [uNear, uFar] with near=white
 // (midas-style). Uses three's skinning chunks so posed/skinned meshes deform
@@ -2633,6 +3387,10 @@ const OP_HEAD = { eyeSep: 0.18, noseFwd: 0.22, noseDown: 0.22, earSide: 0.45, ea
 // Points are baked to head-bone-local ONCE at load (rest pose) and re-evaluated
 // through head.matrixWorld each frame -> tracks head pose, no per-vertex skinning.
 // Leaves headFeat=null (falls back to synthesis) when the submeshes aren't found.
+// Per-model baked head features (nose/eyes/ears). WeakMap keyed by the VRM so
+// each model keeps its own (a VRM instance has no reliable .userData).
+const _headFeats = new WeakMap();
+
 // Shared: locate VRoid-style face submeshes by material name.
 function findFaceMeshes(vrm) {
     const r = { iris: [], eyeline: [], brow: [], mouth: [], skin: [] };
@@ -2650,7 +3408,7 @@ function findFaceMeshes(vrm) {
 }
 
 function computeHeadFeatures(vrm) {
-    headFeat = null;
+    if (vrm) _headFeats.set(vrm, null); // per-model (global headFeat broke multi-model openpose heads)
     const head = vrm?.humanoid?.getRawBoneNode("head");
     if (!head) return;
     vrm.scene.updateMatrixWorld(true);
@@ -2705,22 +3463,23 @@ function computeHeadFeatures(vrm) {
 
     const headInv = head.matrixWorld.clone().invert();
     const toLocal = (p) => (p ? p.applyMatrix4(headInv) : null);
-    headFeat = {
+    _headFeats.set(vrm, {
         eyeL: toLocal(eyeL), eyeR: toLocal(eyeR), nose: toLocal(nose),
         earL: toLocal(earL), earR: toLocal(earR),
-    };
+    });
 }
 
-// Re-evaluate the baked head-local points through the current head pose.
+// Re-evaluate this model's baked head-local points through its current head pose.
 function headFeatWorld(vrm) {
-    if (!headFeat) return null;
+    const hf = vrm ? _headFeats.get(vrm) : null;
+    if (!hf) return null;
     const head = vrm?.humanoid?.getRawBoneNode("head");
     if (!head) return null;
     const m = head.matrixWorld;
     const w = (p) => (p ? p.clone().applyMatrix4(m) : null);
     return {
-        eyeL: w(headFeat.eyeL), eyeR: w(headFeat.eyeR), nose: w(headFeat.nose),
-        earL: w(headFeat.earL), earR: w(headFeat.earR),
+        eyeL: w(hf.eyeL), eyeR: w(hf.eyeR), nose: w(hf.nose),
+        earL: w(hf.earL), earR: w(hf.earR),
     };
 }
 
@@ -2859,11 +3618,8 @@ function renderOpenPoseBodyDataURL(res) {
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, res, res);
 
-    const humanoid = currentVRM?.humanoid;
-    if (!humanoid || !frameSide) {
-        if (!humanoid) console.warn("[VRM Scene] openpose(body): model has no VRM humanoid");
-        return canvas.toDataURL("image/png");
-    }
+    const vrms = cameraVRMs();
+    if (!vrms.length || !frameSide) return canvas.toDataURL("image/png");
 
     // Match renderTypeDataURL's framing: narrow the FOV to the on-screen guide square.
     const savedFov = camera.fov;
@@ -2876,7 +3632,7 @@ function renderOpenPoseBodyDataURL(res) {
     camera.updateMatrixWorld();
     camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
     try {
-        opDraw(ctx, opProject(opBodyKeypointsWorld(currentVRM), res), res);
+        for (const vrm of vrms) opDraw(ctx, opProject(opBodyKeypointsWorld(vrm), res), res);
     } finally {
         camera.fov = savedFov;
         camera.aspect = savedAspect;
@@ -2974,11 +3730,8 @@ function renderOpenPoseHandsDataURL(res) {
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, res, res);
 
-    const humanoid = currentVRM?.humanoid;
-    if (!humanoid || !frameSide) {
-        if (!humanoid) console.warn("[VRM Scene] openpose(hands): model has no VRM humanoid");
-        return canvas.toDataURL("image/png");
-    }
+    const vrms = cameraVRMs();
+    if (!vrms.length || !frameSide) return canvas.toDataURL("image/png");
     const savedFov = camera.fov;
     const savedAspect = camera.aspect;
     const frac = frameSide / viewport.clientHeight;
@@ -2989,8 +3742,10 @@ function renderOpenPoseHandsDataURL(res) {
     camera.updateMatrixWorld();
     camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
     try {
-        opDrawHand(ctx, opProject(opHandKeypointsWorld(currentVRM, "left"), res), res);
-        opDrawHand(ctx, opProject(opHandKeypointsWorld(currentVRM, "right"), res), res);
+        for (const vrm of vrms) {
+            opDrawHand(ctx, opProject(opHandKeypointsWorld(vrm, "left"), res), res);
+            opDrawHand(ctx, opProject(opHandKeypointsWorld(vrm, "right"), res), res);
+        }
     } finally {
         camera.fov = savedFov;
         camera.aspect = savedAspect;
@@ -3011,11 +3766,8 @@ function renderOpenPoseBodyHandsDataURL(res) {
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, res, res);
 
-    const humanoid = currentVRM?.humanoid;
-    if (!humanoid || !frameSide) {
-        if (!humanoid) console.warn("[VRM Scene] openpose(body+hands): model has no VRM humanoid");
-        return canvas.toDataURL("image/png");
-    }
+    const vrms = cameraVRMs();
+    if (!vrms.length || !frameSide) return canvas.toDataURL("image/png");
     const savedFov = camera.fov;
     const savedAspect = camera.aspect;
     const frac = frameSide / viewport.clientHeight;
@@ -3026,9 +3778,11 @@ function renderOpenPoseBodyHandsDataURL(res) {
     camera.updateMatrixWorld();
     camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
     try {
-        opDraw(ctx, opProject(opBodyKeypointsWorld(currentVRM), res), res);
-        opDrawHand(ctx, opProject(opHandKeypointsWorld(currentVRM, "left"), res), res);
-        opDrawHand(ctx, opProject(opHandKeypointsWorld(currentVRM, "right"), res), res);
+        for (const vrm of vrms) {
+            opDraw(ctx, opProject(opBodyKeypointsWorld(vrm), res), res);
+            opDrawHand(ctx, opProject(opHandKeypointsWorld(vrm, "left"), res), res);
+            opDrawHand(ctx, opProject(opHandKeypointsWorld(vrm, "right"), res), res);
+        }
     } finally {
         camera.fov = savedFov;
         camera.aspect = savedAspect;
@@ -3094,10 +3848,16 @@ function renderTypeDataURL(type, res, transparent) {
             scene.background = MASK_BG;
             grid.visible = false;
             renderer.setClearColor(0x000000, 1);
+        } else if (type === "seg") {
+            grid.visible = false; // 残り（override/bg/累積描画）は renderSeg() が担当
         } else if (transparent) {
             scene.background = null;
             grid.visible = false;
             renderer.setClearColor(0x000000, 0);
+        } else if (refImageActive) {
+            // opaque "image" while the 背景画像 underlay is live: use the normal bg, never the reference
+            scene.background = studioLook ? studioBG : darkBG;
+            renderer.setClearColor(0x000000, 1);
         }
 
         // Render to a res×res drawing buffer (pixelRatio 1 = exact size). CSS size
@@ -3105,7 +3865,8 @@ function renderTypeDataURL(type, res, transparent) {
         // yielding, so the on-screen canvas never visibly flickers.
         renderer.setPixelRatio(1);
         renderer.setSize(res, res, false);
-        renderCapture(); // "image" -> bake bloom/grade in; mask/depth/normal render raw (override material set)
+        if (type === "seg") renderSeg(); // 含めるモデルを1体ずつ体色/手色で重ね描き
+        else renderCapture(); // "image" -> bake bloom/grade in; mask/depth/normal render raw (override material set)
         dataURL = renderer.domElement.toDataURL("image/png");
     } finally {
         scene.overrideMaterial = saved.overrideMaterial;
@@ -3133,7 +3894,7 @@ let _pvFrame = 0;
 
 function renderFramePreview() {
     if (frameSide === 0 || !previewCtx) return;
-    const type = previewType.value;
+    const type = previewType();
     const w = viewport.clientWidth;
     const h = viewport.clientHeight;
     const saved = {
@@ -3147,9 +3908,11 @@ function renderFramePreview() {
         floorVisible: studioFloor.visible,
         overrideMaterial: scene.overrideMaterial,
     };
+    let restoreModels = null;
     try {
         setEditVisible(false); // control spheres must not appear in the preview
         studioFloor.visible = false; // ground shadow is presentation-only
+        restoreModels = hideExcludedModels(activeCamera); // このカメラに含めるモデルのみ描画
         // Match the capture framing (narrow FOV to the on-screen square).
         const frac = frameSide / h;
         const vfov = THREE.MathUtils.degToRad(saved.fov);
@@ -3159,41 +3922,21 @@ function renderFramePreview() {
         renderer.setPixelRatio(1);
         renderer.setSize(PREVIEW_RES, PREVIEW_RES, false);
 
-        // Base = the plain image (toggle with the 画像 checkbox). When off, paint a black
-        // bg so the selected channel (openpose/depth/normal/mask) shows alone, as captured.
+        // Render exactly what this camera's 表示モード captures.
         previewCtx.globalAlpha = 1.0;
         previewCtx.globalCompositeOperation = "source-over";
         previewCtx.clearRect(0, 0, PREVIEW_RES, PREVIEW_RES);
-        if (!previewShowImage || previewShowImage.checked) {
-            scene.overrideMaterial = null;
-            renderer.render(scene, camera);
-            previewCtx.drawImage(renderer.domElement, 0, 0, PREVIEW_RES, PREVIEW_RES);
-        } else {
-            previewCtx.fillStyle = "#000";
+        if (type === "openpose(body)" || type === "openpose(hands)" || type === "openpose(body+hands)") {
+            previewCtx.fillStyle = "#000"; // skeleton on black, as captured
             previewCtx.fillRect(0, 0, PREVIEW_RES, PREVIEW_RES);
-        }
-
-        // Overlay = the selected type.
-        if (type === "openpose(body)") {
-            if (currentVRM && currentVRM.humanoid) {
-                camera.updateMatrixWorld();
-                camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
-                opDraw(previewCtx, opProject(opBodyKeypointsWorld(currentVRM), PREVIEW_RES), PREVIEW_RES);
-            }
-        } else if (type === "openpose(hands)") {
-            if (currentVRM && currentVRM.humanoid) {
-                camera.updateMatrixWorld();
-                camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
-                opDrawHand(previewCtx, opProject(opHandKeypointsWorld(currentVRM, "left"), PREVIEW_RES), PREVIEW_RES);
-                opDrawHand(previewCtx, opProject(opHandKeypointsWorld(currentVRM, "right"), PREVIEW_RES), PREVIEW_RES);
-            }
-        } else if (type === "openpose(body+hands)") {
-            if (currentVRM && currentVRM.humanoid) {
-                camera.updateMatrixWorld();
-                camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
-                opDraw(previewCtx, opProject(opBodyKeypointsWorld(currentVRM), PREVIEW_RES), PREVIEW_RES);
-                opDrawHand(previewCtx, opProject(opHandKeypointsWorld(currentVRM, "left"), PREVIEW_RES), PREVIEW_RES);
-                opDrawHand(previewCtx, opProject(opHandKeypointsWorld(currentVRM, "right"), PREVIEW_RES), PREVIEW_RES);
+            camera.updateMatrixWorld();
+            camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+            for (const vrm of cameraVRMs()) {
+                if (type !== "openpose(hands)") opDraw(previewCtx, opProject(opBodyKeypointsWorld(vrm), PREVIEW_RES), PREVIEW_RES);
+                if (type !== "openpose(body)") {
+                    opDrawHand(previewCtx, opProject(opHandKeypointsWorld(vrm, "left"), PREVIEW_RES), PREVIEW_RES);
+                    opDrawHand(previewCtx, opProject(opHandKeypointsWorld(vrm, "right"), PREVIEW_RES), PREVIEW_RES);
+                }
             }
         } else if (type === "mask" || type === "mask(hands)" || type === "depth" || type === "normal") {
             if (type === "mask") scene.overrideMaterial = MASK_MATERIAL;
@@ -3204,13 +3947,17 @@ function renderFramePreview() {
             grid.visible = false;
             renderer.setClearColor(0x000000, 1);
             renderer.render(scene, camera);
-            // "screen": the black background drops out, the type content lays over the image.
-            previewCtx.globalCompositeOperation = "screen";
             previewCtx.drawImage(renderer.domElement, 0, 0, PREVIEW_RES, PREVIEW_RES);
-            previewCtx.globalCompositeOperation = "source-over";
+        } else if (type === "seg") {
+            renderSeg(); // 含めるモデルを1体ずつ体色/手色で重ね描き
+            previewCtx.drawImage(renderer.domElement, 0, 0, PREVIEW_RES, PREVIEW_RES);
+        } else {
+            scene.overrideMaterial = null; // image (RGB)
+            renderer.render(scene, camera);
+            previewCtx.drawImage(renderer.domElement, 0, 0, PREVIEW_RES, PREVIEW_RES);
         }
-        // "image": base only, no overlay.
     } finally {
+        if (restoreModels) restoreModels();
         scene.overrideMaterial = saved.overrideMaterial;
         scene.background = saved.background;
         grid.visible = saved.gridVisible;
@@ -3225,13 +3972,9 @@ function renderFramePreview() {
     }
 }
 
-// Persist the camera name and save folder; show the backend default folder.
-const CAMERA_KEY = "vrmSceneEditor.cameraName";
+// Persist the save folder; show the backend default folder. (Camera is the
+// camera1..9 selector handled by the camera-config block above.)
 const FOLDER_KEY = "vrmSceneEditor.saveFolder";
-cameraNameInput.value = localStorage.getItem(CAMERA_KEY) || "camera1";
-cameraNameInput.addEventListener("change", () => {
-    localStorage.setItem(CAMERA_KEY, cameraNameInput.value.trim());
-});
 saveFolderInput.value = localStorage.getItem(FOLDER_KEY) || "";
 saveFolderInput.addEventListener("change", () => {
     localStorage.setItem(FOLDER_KEY, saveFolderInput.value.trim());
@@ -3258,9 +4001,10 @@ async function captureType(type, res, transparent, folder, cameraName) {
 async function capture() {
     if (capturing || frameSide === 0) return;
 
-    const types = selectedTypes();
-    if (types.length === 0) {
-        showToast("出力タイプが選択されていません", "error");
+    // 有効なカメラを撮影対象とする（各カメラ = 表示モード(複数) + 含めるモデル）
+    const targets = CAMERA_LIST.filter((c) => cameraConfigs[c].enabled && cameraConfigs[c].types.length);
+    if (targets.length === 0) {
+        showToast("有効なカメラがありません（カメラ設定で有効化してください）", "error");
         return;
     }
 
@@ -3270,32 +4014,40 @@ async function capture() {
     const res = parseInt(captureResSelect.value, 10) || 1024;
     const transparent = transparentBgInput.checked;
     const folder = saveFolderInput.value.trim();
-    const cameraName = cameraNameInput.value.trim() || "camera1";
+    const savedActive = activeCamera;
 
     const done = [];
     const failed = [];
     try {
-        // One toast per type, emitted as each capture completes.
-        for (const type of types) {
-            setStatus(`撮影中 (${type}) ...`);
+        for (const cam of targets) {
+            activeCamera = cam; // renderTypeDataURL は cameraVRMs()=activeCamera を参照するため切替
+            const restoreModels = hideExcludedModels(cam); // このカメラに含めるモデルのみ撮影
             try {
-                const result = await captureType(type, res, transparent, folder, cameraName);
-                done.push(result);
-                showToast(`📷 [${result.camera}/${result.type}] 保存＆転送`, "success");
-            } catch (err) {
-                const msg = err?.message || err;
-                failed.push(`${type}: ${msg}`);
-                showToast(`保存エラー [${type}]: ${msg}`, "error");
+                for (const type of cameraConfigs[cam].types) {
+                    setStatus(`撮影中 (${cam}/${type}) ...`);
+                    try {
+                        const result = await captureType(type, res, transparent, folder, cam);
+                        done.push(result);
+                        showToast(`📷 [${result.camera}/${result.type}] 保存＆転送`, "success");
+                    } catch (err) {
+                        const msg = err?.message || err;
+                        failed.push(`${cam}/${type}: ${msg}`);
+                        showToast(`保存エラー [${cam}/${type}]: ${msg}`, "error");
+                    }
+                }
+            } finally {
+                restoreModels();
             }
         }
     } finally {
+        activeCamera = savedActive;
         capturing = false;
         captureBtn.disabled = false;
     }
 
-    const okList = done.map((r) => r.type).join(", ") || "なし";
+    const okList = done.map((r) => `${r.camera}/${r.type}`).join(", ") || "なし";
     setStatus(
-        `[${cameraName}] 保存＆転送: ${okList}` +
+        `保存＆転送: ${okList}` +
         (failed.length ? ` / エラー: ${failed.join(" / ")}` : ""),
     );
 }
@@ -3950,7 +4702,7 @@ const colorPicker = setupColorPicker();
 
 // ---- Floating panels: clicking or showing a window raises it above the others ----
 (function setupPanelStacking() {
-    const ids = ["settings-panel", "transform-panel", "tool-panel", "preview-panel", "expr-panel", "fx-panel", "hand-pose-panel", "pose-lib-panel"];
+    const ids = ["settings-panel", "transform-panel", "tool-panel", "ref-panel", "scene-panel", "camera-panel", "preview-panel", "expr-panel", "fx-panel", "hand-pose-panel", "pose-lib-panel"];
     let z = 20;
     const toFront = (p) => { p.style.zIndex = String(++z); };
     ids.map((id) => document.getElementById(id)).filter(Boolean).forEach((p) => {
@@ -3992,30 +4744,321 @@ const colorPicker = setupColorPicker();
     });
 })();
 
+// ---- ハンドフォーカス: 手首から先だけをクリッピング表示し、手首を中心に編集 ----
+// 親(腕/IK/体)の影響を止めるため、モード中は親IK解決を凍結。指のローカル回転は
+// 親に依存しないので、見た目を安定させるだけで編集データは汚れない。
+let handFocusActive = false;
+let handFocusSide = null; // "left" | "right"
+const HAND_FOCUS_HANDLE_SCALE = 0.5; // フォーカス中の指ハンドル縮小率
+const _handClipPlane = new THREE.Plane();
+let _handFocusSaved = null; // { camPos, target, prevBoneEdit }
+const _hfWrist = new THREE.Vector3(), _hfElbow = new THREE.Vector3(), _hfNormal = new THREE.Vector3();
+
+function handFocusBones(side) {
+    if (!currentVRM || !currentVRM.humanoid) return null;
+    const h = currentVRM.humanoid;
+    const hand = h.getRawBoneNode(side + "Hand");   // 実際に変形するボーン = メッシュに一致
+    const fore = h.getRawBoneNode(side + "LowerArm");
+    return (hand && fore) ? { hand, fore } : null;
+}
+function updateHandFocus() {
+    if (!handFocusActive) return;
+    const b = handFocusBones(handFocusSide);
+    if (!b) return;
+    b.hand.getWorldPosition(_hfWrist);
+    b.fore.getWorldPosition(_hfElbow);
+    _hfNormal.subVectors(_hfWrist, _hfElbow); // 前腕→手 の向き
+    if (_hfNormal.lengthSq() < 1e-8) _hfNormal.set(0, 1, 0);
+    _hfNormal.normalize();
+    // 手首より少し肘側へ平面を置き、手のひら/手首まで残す（法線側=手を保持、反対側=体を切る）
+    _hfElbow.copy(_hfWrist).addScaledVector(_hfNormal, -0.02);
+    _handClipPlane.setFromNormalAndCoplanarPoint(_hfNormal, _hfElbow);
+    // 注: orbit.target は enter 時に手首へ合わせるだけにする。毎フレーム上書きすると
+    //     右ドラッグ(パン)が効かなくなるため、ここでは更新しない（フォーカス中は手首は静止）。
+}
+function enterHandFocus(side) {
+    if (!currentVRM) { showToast("VRMが読み込まれていません", "error", 2000); return; }
+    const b = handFocusBones(side);
+    if (!b) { showToast("手のボーンが見つかりません", "error", 2000); return; }
+    handFocusSide = side;
+    _handFocusSaved = { camPos: camera.position.clone(), target: orbit.target.clone(), prevBoneEdit: boneEditEnabled };
+    handFocusActive = true;
+    setBoneEdit(true);                       // 指の制御点を表示（focus分岐で指のみ表示）
+    // 制御点が近接カメラで大きく見えるので、フォーカス中の指/手首ハンドルは縮小
+    for (const h of boneHandles) if (isHandFocusBone(h.name)) h.mesh.scale.setScalar(HAND_FOCUS_HANDLE_SCALE);
+    renderer.clippingPlanes = [_handClipPlane]; // 手首から先だけ描画
+    updateHandFocus();
+    // カメラを手に寄せる（現在の視線方向を維持して距離だけ詰める）
+    b.hand.getWorldPosition(_hfWrist);
+    const dir = camera.position.clone().sub(_hfWrist);
+    if (dir.lengthSq() < 1e-8) dir.set(0, 0, 1);
+    camera.position.copy(_hfWrist).addScaledVector(dir.normalize(), 0.32);
+    orbit.target.copy(_hfWrist);
+    orbit.update();
+    const bar = document.getElementById("hand-focus-bar");
+    const label = document.getElementById("hand-focus-label");
+    if (label) label.textContent = `ハンドフォーカス: ${side === "left" ? "左手" : "右手"}`;
+    if (bar) bar.hidden = false;
+    showHandEditPanel(side); // 指ごとスライダーパネルを表示
+}
+function exitHandFocus() {
+    if (!handFocusActive) return;
+    for (const h of boneHandles) h.mesh.scale.setScalar(1); // ハンドル縮小を戻す
+    handFocusActive = false;
+    handFocusSide = null;
+    renderer.clippingPlanes = []; // クリッピング解除
+    if (_handFocusSaved) {
+        camera.position.copy(_handFocusSaved.camPos);
+        orbit.target.copy(_handFocusSaved.target);
+        orbit.update();
+        setBoneEdit(_handFocusSaved.prevBoneEdit);
+        _handFocusSaved = null;
+    }
+    handFocusSide = null;
+    hideHandEditPanel();
+    const bar = document.getElementById("hand-focus-bar");
+    if (bar) bar.hidden = true;
+}
+// ---- 指ごと curl/splay ＋ 握り/カッピング の手続き的エディタ（案B） ----
+// スライダー＝土台（restから手続き計算で上書き）／3Dハンドル＝仕上げ。スライダーを
+// 動かし直すとその指は rest から再計算される（手の微調整はリセット）。
+const FINGER_LABELS_JP = ["親指", "人差し指", "中指", "薬指", "小指"];
+const HAND_EDIT_CURL_MAX = { finger: [70, 100, 70], thumb: [40, 55, 55] }; // curl=1 の各関節角(度)
+const HAND_EDIT_SPLAY_MAX = 22;             // splay=±1 の角(度)
+const CUP_CURL_W = [0, 0, 0.15, 0.4, 0.7];  // カッピングが各指curlに足す重み(親〜小)
+const CUP_SPLAY_DEG = [0, 0, -3, -7, -12];  // カッピングが各指splayに足す角(収束)
+function mkHandEditState() { return { curl: [0, 0, 0, 0, 0], splay: [0, 0, 0, 0, 0], grip: 0, cupping: 0 }; }
+const handEditState = { left: mkHandEditState(), right: mkHandEditState() };
+
+function applyHandEditFinger(side, fi) {
+    const bones = handPoseBones[side];
+    if (!bones || !bones.length) return;
+    const st = handEditState[side];
+    const eff = clamp01(st.curl[fi] + st.grip + st.cupping * CUP_CURL_W[fi]);
+    const splayDeg = st.splay[fi] * HAND_EDIT_SPLAY_MAX + st.cupping * CUP_SPLAY_DEG[fi];
+    for (const b of bones) {
+        if (b.finger !== fi) continue;
+        const maxArr = b.isThumb ? HAND_EDIT_CURL_MAX.thumb : HAND_EDIT_CURL_MAX.finger;
+        const curlDeg = eff * (maxArr[b.joint] || 0);
+        _hpOffset.identity();
+        if (b.joint === 0 && splayDeg) _hpOffset.setFromAxisAngle(b.splayAxis, THREE.MathUtils.degToRad(splayDeg));
+        _hpCurl.setFromAxisAngle(b.curlAxis, THREE.MathUtils.degToRad(curlDeg));
+        _hpOffset.multiply(_hpCurl);
+        b.node.quaternion.copy(b.restQuat).multiply(_hpOffset);
+    }
+    if (currentVRM) currentVRM.humanoid.update();
+}
+function applyHandEditAll(side) { for (let fi = 0; fi < FINGERS.length; fi++) applyHandEditFinger(side, fi); }
+
+function buildHandEditPanel(side) {
+    const body = document.getElementById("hand-edit-body");
+    if (!body) return;
+    body.innerHTML = "";
+    const st = handEditState[side];
+    const row = (label, min, max, step, val, oninput) => {
+        const r = document.createElement("div"); r.className = "he-row";
+        const lab = document.createElement("span"); lab.className = "he-label"; lab.textContent = label;
+        const inp = document.createElement("input"); inp.type = "range"; inp.min = String(min); inp.max = String(max); inp.step = String(step); inp.value = String(val); inp.className = "he-range";
+        const num = document.createElement("span"); num.className = "he-num";
+        const upd = () => { num.textContent = (+inp.value).toFixed(2); };
+        inp.addEventListener("input", () => { upd(); oninput(+inp.value); });
+        upd();
+        r.append(lab, inp, num);
+        body.appendChild(r);
+    };
+    const sec = (t) => { const d = document.createElement("div"); d.className = "he-sec"; d.textContent = t; body.appendChild(d); };
+
+    sec("全体");
+    row("握り", 0, 1, 0.01, st.grip, (v) => { st.grip = v; applyHandEditAll(side); });
+    row("カッピング", 0, 1, 0.01, st.cupping, (v) => { st.cupping = v; applyHandEditAll(side); });
+    for (let fi = 0; fi < FINGERS.length; fi++) {
+        sec(FINGER_LABELS_JP[fi]);
+        row("曲げ", 0, 1, 0.01, st.curl[fi], (v) => { st.curl[fi] = v; applyHandEditFinger(side, fi); });
+        row("開き", -1, 1, 0.01, st.splay[fi], (v) => { st.splay[fi] = v; applyHandEditFinger(side, fi); });
+    }
+}
+function showHandEditPanel(side) {
+    handEditState[side] = mkHandEditState(); // 入室時はスライダーを初期化（現在のポーズは保持）
+    buildHandEditPanel(side);
+    const ep = document.getElementById("hand-edit-panel");
+    const t = document.getElementById("hand-edit-title");
+    if (t) t.textContent = `ハンド編集: ${side === "left" ? "左手" : "右手"}`;
+    if (ep) ep.hidden = false;
+    const pal = document.getElementById("hand-pose-palette");
+    if (pal) { pal.hidden = false; renderHandPalette(); }
+}
+function hideHandEditPanel() {
+    const ep = document.getElementById("hand-edit-panel"); if (ep) ep.hidden = true;
+    const pal = document.getElementById("hand-pose-palette"); if (pal) pal.hidden = true;
+}
+
+// ---- ハンドポーズ・ライブラリ（左右共通のパラメータとして保存） ----
+// 保存するのは curl/splay/grip/cupping のパラメータ。手に依存しない中立値なので、
+// 適用先の手で applyHandEdit すれば自動的にミラーされた正しい形になる（座標変換不要）。
+const HAND_LIB_KEY = "vrmSceneEditor.handPoseLib";
+function loadHandLib() { try { const s = JSON.parse(localStorage.getItem(HAND_LIB_KEY)); if (Array.isArray(s)) return s; } catch (_) {} return []; }
+let handPoseLib = loadHandLib();
+function saveHandLib() { localStorage.setItem(HAND_LIB_KEY, JSON.stringify(handPoseLib)); }
+function cloneHandParams(st) { return { curl: st.curl.slice(), splay: st.splay.slice(), grip: st.grip, cupping: st.cupping }; }
+function applyHandPoseLib(idx) {
+    if (!handFocusActive) return;
+    const p = handPoseLib[idx]; if (!p || !p.params) return;
+    const side = handFocusSide;
+    handEditState[side] = {
+        curl: (p.params.curl || [0, 0, 0, 0, 0]).slice(),
+        splay: (p.params.splay || [0, 0, 0, 0, 0]).slice(),
+        grip: p.params.grip || 0, cupping: p.params.cupping || 0,
+    };
+    buildHandEditPanel(side);   // スライダーを読み込んだ値に
+    applyHandEditAll(side);     // 選んだ手に適用（左右自動ミラー）
+}
+// 現在フォーカス中の手を正方形サムネに（補助点を隠し、手首クリップ＋クリーン背景でオフスクリーン描画）
+const HAND_THUMB_SIZE = 64;        // 縮小保存（小さめ）
+const HAND_THUMB_QUALITY = 0.72;   // JPEG品質（PNGより大幅に軽量）
+function renderHandThumb() {
+    if (!handFocusActive) return "";
+    try { _initThumb(); } catch (_) { return ""; }
+    const prevEdit = _editVisible;
+    setEditVisible(false);                 // 制御点を隠す
+    const prevBg = scene.background;
+    scene.background = null;
+    _thumbR.setSize(HAND_THUMB_SIZE, HAND_THUMB_SIZE, false);
+    _thumbR.setClearColor(0x1a1a1a, 1);
+    _thumbCam.aspect = 1; _thumbCam.fov = camera.fov;
+    _thumbCam.position.copy(camera.position);
+    _thumbCam.quaternion.copy(camera.quaternion);
+    _thumbCam.updateProjectionMatrix();
+    const prevClip = _thumbR.clippingPlanes;
+    _thumbR.clippingPlanes = [_handClipPlane];
+    let url = "";
+    try { _thumbR.render(scene, _thumbCam); url = _thumbR.domElement.toDataURL("image/jpeg", HAND_THUMB_QUALITY); } catch (_) {}
+    _thumbR.clippingPlanes = prevClip;
+    _thumbR.setSize(THUMB_W, THUMB_H, false); // モデルサムネ用サイズに戻す
+    scene.background = prevBg;
+    setEditVisible(prevEdit);               // 制御点を戻す
+    return url;
+}
+
+let selectedHandPose = -1;
+function updateHplStatus() {
+    const cnt = document.getElementById("hpl-count"); if (cnt) cnt.textContent = `${handPoseLib.length}件`;
+    const del = document.getElementById("hpl-del"); if (del) del.disabled = selectedHandPose < 0;
+    const add = document.getElementById("hpl-add"); if (add) add.disabled = !handFocusActive;
+}
+function renderHandPalette() {
+    const list = document.getElementById("hpl-list"); if (!list) return;
+    list.innerHTML = "";
+    if (selectedHandPose >= handPoseLib.length) selectedHandPose = -1;
+    if (!handPoseLib.length) { list.innerHTML = '<div class="hpl-empty">登録なし</div>'; updateHplStatus(); return; }
+    handPoseLib.forEach((p, idx) => {
+        const card = document.createElement("div"); card.className = "hpl-card" + (idx === selectedHandPose ? " selected" : ""); card.title = p.name;
+        let thumbEl;
+        if (p.thumb) { thumbEl = document.createElement("img"); thumbEl.className = "hpl-thumb"; thumbEl.alt = ""; thumbEl.src = p.thumb; }
+        else { thumbEl = document.createElement("div"); thumbEl.className = "hpl-thumb"; }
+        const nm = document.createElement("span"); nm.className = "hpl-name"; nm.textContent = p.name;
+        card.append(thumbEl, nm);
+        card.addEventListener("click", () => {
+            selectedHandPose = idx;
+            for (const c of list.querySelectorAll(".hpl-card.selected")) c.classList.remove("selected");
+            card.classList.add("selected"); updateHplStatus();
+        });
+        card.addEventListener("dblclick", () => applyHandPoseLib(idx)); // ダブルクリックで適用
+        list.appendChild(card);
+    });
+    updateHplStatus();
+}
+function addHandPoseWithName(name) {
+    if (!handFocusActive) { showToast("ハンド編集中に追加できます", "error", 2000); return; }
+    name = (name || "").trim() || `hand-${handPoseLib.length + 1}`;
+    const thumb = renderHandThumb();
+    handPoseLib.push({ name, params: cloneHandParams(handEditState[handFocusSide]), thumb });
+    saveHandLib();
+    selectedHandPose = handPoseLib.length - 1;
+    renderHandPalette();
+    showToast(`ハンドポーズ登録: ${name}`, "success", 2000);
+}
+function deleteSelectedHandPose() {
+    if (selectedHandPose < 0) return;
+    const p = handPoseLib[selectedHandPose]; if (!p) return;
+    confirmDialog(`「${p.name}」を削除しますか？`, () => {
+        handPoseLib.splice(selectedHandPose, 1);
+        selectedHandPose = -1;
+        saveHandLib();
+        renderHandPalette();
+    });
+}
+
+(function setupHandFocusUI() {
+    const l = document.getElementById("hp-focus-left");
+    const r = document.getElementById("hp-focus-right");
+    const exit = document.getElementById("hand-focus-exit");
+    const reset = document.getElementById("hand-edit-reset");
+    if (l) l.addEventListener("click", () => enterHandFocus("left"));
+    if (r) r.addEventListener("click", () => enterHandFocus("right"));
+    if (exit) exit.addEventListener("click", exitHandFocus);
+    if (reset) reset.addEventListener("click", () => {
+        if (!handFocusActive) return;
+        handEditState[handFocusSide] = mkHandEditState();
+        buildHandEditPanel(handFocusSide);
+        applyHandEditAll(handFocusSide); // 平手化
+    });
+    setupFloatingPanel("hand-edit-panel"); // タイトルでドラッグ移動
+    persistPanelGeometry("hand-edit-panel", "vrmSceneEditor.handEditGeom"); // 位置・サイズを記憶
+    // ハンドポーズパレット
+    setupFloatingPanel("hand-pose-palette");
+    persistPanelGeometry("hand-pose-palette", "vrmSceneEditor.handPalGeom");
+    const hplDel = document.getElementById("hpl-del");
+    if (hplDel) hplDel.addEventListener("click", deleteSelectedHandPose);
+    // 追加 → ポーズ名登録オーバーレイ
+    const nameModal = document.getElementById("hand-pose-name-modal");
+    const nameInput = document.getElementById("hpn-input");
+    const nameOk = document.getElementById("hpn-ok");
+    const hplAdd = document.getElementById("hpl-add");
+    const closeName = () => { if (nameModal) nameModal.hidden = true; };
+    const openName = () => {
+        if (!handFocusActive) { showToast("ハンド編集中に追加できます", "error", 2000); return; }
+        if (nameInput) { nameInput.value = ""; nameInput.placeholder = `hand-${handPoseLib.length + 1}`; }
+        if (nameModal) nameModal.hidden = false;
+        if (nameInput) nameInput.focus();
+    };
+    const submitName = () => { addHandPoseWithName(nameInput ? nameInput.value : ""); closeName(); };
+    if (hplAdd) hplAdd.addEventListener("click", openName);
+    if (nameOk) nameOk.addEventListener("click", submitName);
+    if (nameInput) nameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") submitName(); });
+    if (nameModal) nameModal.addEventListener("click", (e) => { if (e.target === nameModal || e.target.closest("[data-close]")) closeName(); });
+    renderHandPalette();
+    document.addEventListener("keydown", (e) => {
+        if (e.key !== "Escape") return;
+        if (nameModal && !nameModal.hidden) { e.preventDefault(); closeName(); return; } // モーダル優先で閉じる
+        if (handFocusActive) { e.preventDefault(); exitHandFocus(); }
+    });
+})();
+
 function animate() {
     requestAnimationFrame(animate);
     const delta = clock.getDelta();
-    if (ikChains.length) solveAnchoredChains(); // hold pinned hands/feet/chest as the body moves
+    if (ikChains.length && !handFocusActive) solveAnchoredChains(); // ハンドフォーカス中は親IKを凍結
     if (currentVRM) { currentVRM.update(delta); applyFaceMorphs(); applyEyeAim(); } // morphs + per-eye aim last
     if (ikProxies.length) snapProxies(false); // keep IK/hip/shoulder balls on the limbs when idle
+    updateHandFocus(); // 手首クリッピング平面＋ピボットを毎フレーム更新
     orbit.update();
     // Re-apply roll each frame: orbit.update() just reset the orientation to
     // level via lookAt(), so this rotation around the view axis doesn't
     // accumulate. rotateZ uses the camera's local Z = its line of sight.
     if (rollAngle !== 0) camera.rotateZ(rollAngle);
     if (_pvFrame++ % 4 === 0) renderFramePreview(); // ~15fps composite preview
+    if (boneTreePanel && !boneTreePanel.hidden && _btTick++ % 6 === 0) updateBoneTreeValues(); // live bone rotations
     renderView(); // bloom-on -> offscreen pipeline; off -> direct render
 }
 animate();
 
 // Auto-load the bundled sample model on open (silently fall back to the prompt
-// if it is not present).
-const DEFAULT_MODEL_URL = "/vrm-scene-editor-assets/models/sample.vrm";
+// if it is not present). Tag it with the sentinel file so it can be saved/restored.
 const promptMessage = "VRM / GLB / GLTF を読み込んでください(ボタン または ドラッグ&ドロップ)";
 setStatus("サンプルVRMを読込中 ...");
 loader.load(
     DEFAULT_MODEL_URL,
-    (gltf) => onModelLoaded(gltf),
+    (gltf) => onModelLoaded(gltf, false, DEFAULT_MODEL_FILE),
     undefined,
     () => setStatus(promptMessage),
 );
@@ -4054,9 +5097,354 @@ loader.load(
     setBoneEdit(boneEditEnabled); // reflect the current state on the buttons
 })();
 
+// ---- シーン保存: ウィンドウ配置・設定・カメラ・モデル＋ポーズ＋サムネを保存 ----
+function defaultSceneName() {
+    const d = new Date(); const p = (n) => String(n).padStart(2, "0");
+    return `scene-${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+const SCENE_PANEL_IDS = ["settings-panel", "transform-panel", "tool-panel", "ref-panel", "scene-panel", "camera-panel", "preview-panel", "expr-panel", "fx-panel", "hand-pose-panel", "pose-lib-panel"];
+function serializeModelPose(vrm) {
+    if (!vrm || !vrm.humanoid) return null;
+    const names = Object.keys(vrm.humanoid.humanBones || {});
+    const bones = {}; const locks = [];
+    for (const bn of names) {
+        const node = vrm.humanoid.getNormalizedBoneNode(bn);
+        if (!node) continue;
+        bones[bn] = node.quaternion.toArray();
+        if (lockedBones.has(node)) locks.push(bn);
+    }
+    const hips = vrm.humanoid.getNormalizedBoneNode("hips");
+    return { bones, hipPos: hips ? hips.position.toArray() : null, locks };
+}
+function serializeScene(name) {
+    const layout = {};
+    for (const id of SCENE_PANEL_IDS) {
+        const el = document.getElementById(id); if (!el) continue;
+        const r = el.getBoundingClientRect();
+        layout[id] = { hidden: !!el.hidden, left: Math.round(r.left), top: Math.round(r.top), w: el.offsetWidth, h: el.offsetHeight };
+    }
+    const models = loadedModels.map((e) => ({
+        id: e.id, file: e.file || null, name: e.name, active: e.root === modelRoot,
+        transform: { p: e.root.position.toArray(), rq: e.root.quaternion.toArray(), tq: e.tilt.quaternion.toArray(), ts: e.tilt.scale.toArray() },
+        pose: serializeModelPose(e.vrm),
+    }));
+    const view = { camPos: camera.position.toArray(), target: orbit.target.toArray() }; // ビューポート(回転/ズーム)
+    return { name, created: new Date().toISOString(), layout, models, cameras: cameraConfigs, activeCamera, boneEdit: boneEditEnabled, view };
+}
+(function setupSceneSave() {
+    const btn = document.getElementById("scene-save-btn");
+    const modal = document.getElementById("scene-save-modal");
+    const input = document.getElementById("scene-name-input");
+    const ok = document.getElementById("scene-save-ok");
+    if (!btn || !modal) return;
+    const close = () => { modal.hidden = true; };
+    const open = () => { if (input) { input.value = ""; input.placeholder = defaultSceneName(); } modal.hidden = false; if (input) input.focus(); };
+    async function doSave() {
+        const name = (input && input.value.trim()) || defaultSceneName();
+        const thumbnail = previewCanvas ? previewCanvas.toDataURL("image/png") : "";
+        try {
+            const res = await fetch("/vrm-scene-editor/save-scene", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name, data: serializeScene(name), thumbnail }),
+            });
+            const r = await res.json();
+            if (!res.ok) throw new Error(r.error || res.status);
+            showToast(`シーン保存: ${r.name}`, "success", 2500);
+            close();
+        } catch (e) { showToast(`保存失敗: ${e.message || e}`, "error", 3000); }
+    }
+    btn.addEventListener("click", open);
+    if (ok) ok.addEventListener("click", doSave);
+    if (input) input.addEventListener("keydown", (e) => { if (e.key === "Enter") doSave(); });
+    modal.addEventListener("click", (e) => { if (e.target === modal || e.target.closest("[data-close]")) close(); });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !modal.hidden) close(); });
+})();
+
+// ---- シーンロード: 保存したシーン (models/scene/*.json) を復元 ----
+function deserializeModelPose(vrm, pose) {
+    if (!vrm || !vrm.humanoid || !pose) return;
+    const h = vrm.humanoid;
+    for (const [bn, arr] of Object.entries(pose.bones || {})) {
+        const node = h.getNormalizedBoneNode(bn);
+        if (node && Array.isArray(arr)) node.quaternion.fromArray(arr);
+    }
+    if (pose.hipPos) { const hips = h.getNormalizedBoneNode("hips"); if (hips) hips.position.fromArray(pose.hipPos); }
+    h.update();
+    vrm.scene.updateMatrixWorld(true);
+    if (Array.isArray(pose.locks)) for (const bn of pose.locks) { const node = h.getNormalizedBoneNode(bn); if (node) lockedBones.add(node); }
+}
+function applyModelTransform(entry, t) {
+    if (!t) return;
+    if (Array.isArray(t.p)) entry.root.position.fromArray(t.p);
+    if (Array.isArray(t.rq)) entry.root.quaternion.fromArray(t.rq);
+    if (Array.isArray(t.tq)) entry.tilt.quaternion.fromArray(t.tq);
+    if (Array.isArray(t.ts)) entry.tilt.scale.fromArray(t.ts);
+}
+async function loadSceneData(data) {
+    if (!data || !Array.isArray(data.models)) { showToast("シーンデータが不正です", "error", 2500); return; }
+    clearAllModels();
+    lockedBones.clear();
+
+    const idMap = {}; // 旧モデルid -> 新モデルid（カメラの除外設定の付け替え用）
+    const loaded = []; // {entry, ms} 復元後にポーズを再適用するため保持
+    let activeIdx = 0;
+    for (const ms of data.models) {
+        if (!ms.file) continue; // 外部ドロップ由来のモデルは再読込不可
+        const ok = await loadModelFromLibrary({ name: ms.name || ms.file, file: ms.file }, true);
+        if (!ok) continue;
+        const entry = loadedModels[loadedModels.length - 1];
+        if (ms.name) entry.name = ms.name;
+        applyModelTransform(entry, ms.transform);
+        deserializeModelPose(entry.vrm, ms.pose);
+        if (ms.id != null) idMap[ms.id] = entry.id;
+        if (ms.active) activeIdx = loadedModels.length - 1;
+        loaded.push({ entry, ms });
+    }
+
+    // カメラ設定の復元（除外モデルidは新idへ付け替え）
+    if (data.cameras) {
+        for (const c of CAMERA_LIST) {
+            const o = data.cameras[c]; if (!o) continue;
+            if (typeof o.enabled === "boolean") cameraConfigs[c].enabled = o.enabled;
+            else if (o.type) cameraConfigs[c].enabled = (c === "camera1");
+            cameraConfigs[c].types = Array.isArray(o.types) ? o.types.filter((t) => OUTPUT_TYPES.includes(t))
+                : (o.type && OUTPUT_TYPES.includes(o.type) ? [o.type] : cameraConfigs[c].types);
+            if (!cameraConfigs[c].types.length) cameraConfigs[c].types = ["image"];
+            cameraConfigs[c].exclude = Array.isArray(o.exclude) ? o.exclude.map((old) => idMap[old]).filter((v) => v != null) : [];
+        }
+        if (CAMERA_LIST.includes(data.activeCamera)) activeCamera = data.activeCamera;
+        saveCameras();
+        if (typeof syncCameraUI === "function") syncCameraUI();
+    }
+
+    // ボーン編集モードの復元
+    if (typeof data.boneEdit === "boolean" && typeof setBoneEdit === "function") setBoneEdit(data.boneEdit);
+
+    // ウィンドウ配置の復元
+    if (data.layout) for (const id of SCENE_PANEL_IDS) {
+        const L = data.layout[id]; const el = document.getElementById(id);
+        if (!L || !el) continue;
+        el.hidden = !!L.hidden;
+        if (!L.hidden) {
+            if (typeof L.left === "number") el.style.left = L.left + "px";
+            if (typeof L.top === "number") { el.style.top = L.top + "px"; el.style.bottom = "auto"; }
+            if (typeof L.w === "number") el.style.width = L.w + "px";
+            if (typeof L.h === "number") el.style.height = L.h + "px";
+        }
+    }
+
+    if (loadedModels.length) activateModel(loadedModels[Math.min(activeIdx, loadedModels.length - 1)]);
+
+    // activateModel が applyCurrentHandPose 等でポーズに触れるため、最後にもう一度確実に適用
+    for (const { entry, ms } of loaded) { applyModelTransform(entry, ms.transform); deserializeModelPose(entry.vrm, ms.pose); }
+    snapProxies(true); // IK/hip ボールを復元後のポーズに合わせる
+
+    // ビューポート(カメラの回転方向・ズーム)の復元 — frameCamera より後に上書き
+    if (data.view) {
+        if (Array.isArray(data.view.camPos)) camera.position.fromArray(data.view.camPos);
+        if (Array.isArray(data.view.target)) orbit.target.fromArray(data.view.target);
+        orbit.update();
+    }
+
+    updateModelListUI();
+    renderFramePreview();
+    showToast(`シーン読込: ${data.name || ""}`, "success", 2500);
+}
+(function setupSceneLibrary() {
+    const modal = document.getElementById("scene-modal");
+    if (!modal) return;
+    const body = modal.querySelector(".pl-body");
+    const reloadBtn = document.getElementById("scene-reload");
+    const openBtn = document.getElementById("scene-load-btn"); // ファイル ▾ → シーンロード
+    const okBtn = document.getElementById("scene-load-ok");
+    const closeFootBtn = document.getElementById("scene-load-close");
+    let scenes = [];
+    let selectedFile = null;
+    const updateOk = () => { if (okBtn) okBtn.disabled = !selectedFile; };
+    const close = () => { modal.hidden = true; };
+    const open = () => { modal.hidden = false; load(); };
+    const thumbUrl = (thumb) => "/vrm-scene-models/scene/" + encodeURIComponent(thumb);
+
+    async function doLoad(file) {
+        if (!file) return;
+        close();
+        setStatus("シーン読込中 ...");
+        let data;
+        try {
+            const res = await fetch("/vrm-scene-editor/scene?file=" + encodeURIComponent(file));
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            data = await res.json();
+        } catch (e) {
+            showToast(`シーン読込に失敗しました (${e.message})`, "error", 3000);
+            return;
+        }
+        await loadSceneData(data);
+    }
+
+    async function doDelete(s) {
+        try {
+            const res = await fetch("/vrm-scene-editor/delete-scene", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ file: s.file }),
+            });
+            const r = await res.json();
+            if (!res.ok) throw new Error(r.error || res.status);
+            if (selectedFile === s.file) { selectedFile = null; updateOk(); }
+            showToast(`シーン削除: ${s.name}`, "success", 2000);
+            load(); // 一覧を更新
+        } catch (e) { showToast(`削除失敗: ${e.message || e}`, "error", 3000); }
+    }
+
+    async function load() {
+        body.innerHTML = '<div class="pl-empty">読込中 ...</div>';
+        selectedFile = null; updateOk();
+        let data;
+        try {
+            const res = await fetch("/vrm-scene-editor/scenes");
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            data = await res.json();
+        } catch (e) {
+            body.innerHTML = `<div class="pl-empty">一覧の取得に失敗しました (${e.message})<br>ComfyUI の再起動が必要かもしれません</div>`;
+            return;
+        }
+        scenes = data.scenes ?? [];
+        if (!scenes.length) { body.innerHTML = '<div class="pl-empty">models/scene に保存済みシーンがありません</div>'; return; }
+        body.innerHTML = "";
+        for (const s of scenes) {
+            const card = document.createElement("button");
+            card.type = "button"; card.className = "ml-card"; card.title = s.file;
+            let thumbEl;
+            if (s.thumb) {
+                thumbEl = document.createElement("img"); thumbEl.className = "ml-thumb"; thumbEl.alt = ""; thumbEl.src = thumbUrl(s.thumb);
+                thumbEl.addEventListener("error", () => { const ph = document.createElement("div"); ph.className = "ml-noimg"; ph.textContent = "No Image"; thumbEl.replaceWith(ph); });
+            } else {
+                thumbEl = document.createElement("div"); thumbEl.className = "ml-noimg"; thumbEl.textContent = "No Image";
+            }
+            const nm = document.createElement("span"); nm.className = "ml-name"; nm.textContent = s.name;
+            card.append(thumbEl, nm);
+            card.addEventListener("click", () => { // 単一選択
+                selectedFile = s.file;
+                for (const c of body.querySelectorAll(".ml-card.selected")) c.classList.remove("selected");
+                card.classList.add("selected");
+                updateOk();
+            });
+            card.addEventListener("dblclick", () => doLoad(s.file)); // ダブルクリックで即読込
+            const del = document.createElement("button"); // 削除（確認オーバーレイ）
+            del.type = "button"; del.className = "sc-del"; del.textContent = "×"; del.title = "削除";
+            del.addEventListener("click", (ev) => {
+                ev.stopPropagation();
+                confirmDialog(`シーン「${s.name}」を削除しますか？`, () => doDelete(s));
+            });
+            const wrap = document.createElement("div"); wrap.className = "sc-card-wrap";
+            wrap.append(card, del);
+            body.appendChild(wrap);
+        }
+    }
+
+    if (reloadBtn) reloadBtn.addEventListener("click", load);
+    if (okBtn) okBtn.addEventListener("click", () => doLoad(selectedFile));
+    if (closeFootBtn) closeFootBtn.addEventListener("click", close);
+    if (openBtn) openBtn.addEventListener("click", open);
+    modal.addEventListener("click", (e) => { if (e.target === modal || e.target.closest("[data-close]")) close(); });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !modal.hidden) close(); });
+})();
+
 // ---- Help menu: バージョン情報 / ライセンス dialogs ----
 // APP_VERSION is the single source of truth: it fills both the bottom-right
 // watermark badge and the about dialog. Bump it here on release.
+// ---- 背景画像（参照アンダーレイ） ----
+// A reference image drawn behind the (transparent) canvas so the model can be posed
+// to match it. DOM-only -> never appears in captures. Toggling it flips the live
+// background to transparent via updateLiveBackground().
+let _refObjURL = null;
+function loadRefImage(file) {
+    const img = document.getElementById("ref-image");
+    if (!img) return;
+    if (!file || !file.type || !file.type.startsWith("image/")) { if (file) setStatus("画像ファイルを選んでください"); return; }
+    if (_refObjURL) URL.revokeObjectURL(_refObjURL);
+    _refObjURL = URL.createObjectURL(file);
+    img.src = _refObjURL;
+    const showCb = document.getElementById("ref-show");
+    if (showCb) showCb.checked = true;
+    refImageActive = true;
+    img.style.display = "block";
+    updateLiveBackground();
+    const panel = document.getElementById("ref-panel");
+    if (panel) panel.hidden = false; // surface the panel so the controls are reachable
+    setStatus(`背景画像: ${file.name}`);
+}
+
+(function setupRefPanel() {
+    const panel = document.getElementById("ref-panel");
+    const img = document.getElementById("ref-image");
+    if (!panel || !img) return;
+    const input = document.getElementById("ref-input");
+    const showCb = document.getElementById("ref-show");
+    const frontCb = document.getElementById("ref-front");
+    const opacityEl = document.getElementById("ref-opacity");
+    const scaleEl = document.getElementById("ref-scale");
+    const rotEl = document.getElementById("ref-rot");
+    const xEl = document.getElementById("ref-x");
+    const yEl = document.getElementById("ref-y");
+    const setVal = (id, t) => { const el = document.getElementById(id); if (el) el.textContent = t; };
+    const applyTransform = () => { img.style.transform = `translate(${xEl.value}%, ${yEl.value}%) rotate(${rotEl.value}deg) scale(${scaleEl.value})`; };
+    const applyShow = () => {
+        refImageActive = showCb.checked && !!img.getAttribute("src");
+        img.style.display = refImageActive ? "block" : "none";
+        updateLiveBackground();
+    };
+    // Front mode: lift the image above the canvas (model) but keep it pointer-events:none,
+    // so it overlays the model visually while control stays on the model.
+    const applyFront = () => { img.style.zIndex = (frontCb && frontCb.checked) ? "2" : "0"; };
+
+    document.getElementById("ref-load").addEventListener("click", () => input.click());
+    input.addEventListener("change", (e) => { loadRefImage(e.target.files?.[0]); input.value = ""; });
+    document.getElementById("ref-clear").addEventListener("click", () => {
+        if (_refObjURL) { URL.revokeObjectURL(_refObjURL); _refObjURL = null; }
+        img.removeAttribute("src");
+        showCb.checked = false;
+        applyShow();
+        setStatus("背景画像をクリアしました");
+    });
+    showCb.addEventListener("change", applyShow);
+    if (frontCb) frontCb.addEventListener("change", applyFront);
+    opacityEl.addEventListener("input", () => { img.style.opacity = opacityEl.value; setVal("ref-opacity-val", Number(opacityEl.value).toFixed(2)); });
+    scaleEl.addEventListener("input", () => { applyTransform(); setVal("ref-scale-val", Number(scaleEl.value).toFixed(2)); });
+    rotEl.addEventListener("input", () => { applyTransform(); setVal("ref-rot-val", Number(rotEl.value).toFixed(1) + "°"); });
+    xEl.addEventListener("input", () => { applyTransform(); setVal("ref-x-val", Number(xEl.value).toFixed(1)); });
+    yEl.addEventListener("input", () => { applyTransform(); setVal("ref-y-val", Number(yEl.value).toFixed(1)); });
+
+    img.style.opacity = opacityEl.value;
+    applyTransform();
+    applyFront();
+
+    const closeBtn = document.getElementById("ref-close");
+    if (closeBtn) closeBtn.addEventListener("click", () => { panel.hidden = true; });
+
+    // Drag the panel by its title bar (same pattern as the other floating panels).
+    const title = panel.querySelector(".rf-title");
+    if (title) {
+        let dx = 0, dy = 0, dragging = false;
+        title.addEventListener("pointerdown", (e) => {
+            if (e.target.closest("#ref-close")) return;
+            const r = panel.getBoundingClientRect();
+            panel.style.left = r.left + "px"; panel.style.top = r.top + "px";
+            dx = e.clientX - r.left; dy = e.clientY - r.top; dragging = true;
+            try { title.setPointerCapture(e.pointerId); } catch (_) {}
+            e.preventDefault();
+        });
+        title.addEventListener("pointermove", (e) => {
+            if (!dragging) return;
+            const x = Math.max(0, Math.min(e.clientX - dx, window.innerWidth - panel.offsetWidth));
+            const y = Math.max(0, Math.min(e.clientY - dy, window.innerHeight - panel.offsetHeight));
+            panel.style.left = x + "px"; panel.style.top = y + "px";
+        });
+        const end = (e) => { if (dragging) { dragging = false; try { title.releasePointerCapture(e.pointerId); } catch (_) {} } };
+        title.addEventListener("pointerup", end);
+        title.addEventListener("pointercancel", end);
+    }
+})();
+
 (function setupHelpDialogs() {
     const APP_VERSION = "v0.1a";
     const badgeVer = document.querySelector("#app-badge .ver");

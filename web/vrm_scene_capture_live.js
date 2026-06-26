@@ -46,8 +46,49 @@ function applyPreview(node, url) {
     img.src = url;
 }
 
+function clearPreview(node) {
+    node.imgs = [];
+    node.imageIndex = 0;
+    app.graph?.setDirtyCanvas(true, true);
+}
+
+// On camera/type switch: pull the matching capture from the registry and refresh
+// the node image immediately; if none exists, show empty (no error).
+async function reloadNodePreview(node) {
+    const camera = safeToken(widgetValue(node, "camera"), "camera1");
+    const imageType = safeToken(widgetValue(node, "type"), "image");
+    let data;
+    try {
+        const res = await api.fetchApi("/vrm-scene-editor/channels");
+        data = await res.json();
+    } catch (_) { return; }
+    const ch = (data.channels ?? []).find((c) => c.camera === camera && c.type === imageType);
+    if (ch && ch.preview) applyPreview(node, previewUrl(ch.preview, ch.token));
+    else clearPreview(node); // 画像が無ければ空表示
+}
+
 app.registerExtension({
     name: "VrmSceneEditor.CaptureLive",
+    // Reload the in-node preview whenever the camera/type dropdown changes.
+    beforeRegisterNodeDef(nodeType, nodeData) {
+        if (nodeData?.name !== NODE_CLASS) return;
+        const origCreated = nodeType.prototype.onNodeCreated;
+        nodeType.prototype.onNodeCreated = function () {
+            const ret = origCreated?.apply(this, arguments);
+            const node = this;
+            for (const name of ["camera", "type"]) {
+                const w = node.widgets?.find((x) => x?.name === name);
+                if (!w) continue;
+                const prev = w.callback;
+                w.callback = function () {
+                    const r = prev?.apply(this, arguments);
+                    reloadNodePreview(node); // 切り替えたタイミングでリロード
+                    return r;
+                };
+            }
+            return ret;
+        };
+    },
     setup() {
         api.addEventListener("vrm_capture", (event) => {
             const detail = event?.detail ?? {};

@@ -23,3 +23,7 @@ desktop.ini
 .idea/
 *.swp
 *~
+
+# User asset library: VRM models (licensed), scenes, poses, hand poses.
+# These are per-user data and must not be committed. Auto-created at startup.
+models/
