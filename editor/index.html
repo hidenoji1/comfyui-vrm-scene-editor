@@ -526,6 +526,7 @@
         #hand-pose-palette .hpl-status-btns { display: flex; gap: 6px; }
         #hand-pose-palette .hpl-status-btns button { background: #1e1e1e; color: #e6e6e6; border: 1px solid #555; border-radius: 4px; padding: 4px 14px; font-size: 13px; cursor: pointer; }
         #hand-pose-palette .hpl-status-btns #hpl-add:hover { border-color: #3485bb; background: #27425e; }
+        #hand-pose-palette .hpl-status-btns #hpl-apply:hover { border-color: #3aa676; background: #27523e; }
         #hand-pose-palette .hpl-status-btns #hpl-del:hover { border-color: #e05a48; background: #c0392b; color: #fff; }
         #hand-pose-palette .hpl-status-btns button:disabled { color: #666; border-color: #444; cursor: default; background: #1e1e1e; }
         /* ポーズ名登録オーバーレイ */
@@ -571,6 +572,7 @@
         #pose-lib-panel .plib-status-btns { display: flex; gap: 6px; }
         #pose-lib-panel .plib-status-btns button { background: #1e1e1e; color: #e6e6e6; border: 1px solid #555; border-radius: 4px; padding: 4px 14px; font-size: 13px; cursor: pointer; }
         #pose-lib-panel .plib-status-btns #pose-lib-reload:hover { border-color: #3485bb; background: #27425e; }
+        #pose-lib-panel .plib-status-btns #pose-lib-apply:hover { border-color: #3aa676; background: #27523e; }
         #pose-lib-panel .plib-status-btns #pose-lib-del:hover { border-color: #e05a48; background: #c0392b; color: #fff; }
         #pose-lib-panel .plib-status-btns button:disabled { color: #666; border-color: #444; cursor: default; background: #1e1e1e; }
         /* モデル読み込み（中央モーダル）— VRoid風のサムネイルカード一覧。 */
@@ -855,7 +857,7 @@
     <div id="viewport">
         <img id="ref-image" alt="">
         <div id="capture-frame"></div>
-        <div id="app-badge">VRM Scene Editor <span class="ver">v0.1d</span></div>
+        <div id="app-badge">VRM Scene Editor <span class="ver">v0.1e</span></div>
         <div id="ref-panel" hidden>
             <div class="rf-title"><span>背景画像</span><button id="ref-close" type="button" title="閉じる">×</button></div>
             <div class="rf-body">
@@ -943,6 +945,7 @@
                 <span id="hpl-count">0件</span>
                 <span class="hpl-status-btns">
                     <button id="hpl-add" type="button" title="現在の手を登録">追加</button>
+                    <button id="hpl-apply" type="button" title="選択したハンドポーズを適用">適用</button>
                     <button id="hpl-del" type="button" title="選択を削除">削除</button>
                 </span>
             </div>
@@ -988,6 +991,7 @@
                 <span id="pose-lib-count">0件</span>
                 <span class="plib-status-btns">
                     <button id="pose-lib-reload" type="button" title="一覧を更新">再読込</button>
+                    <button id="pose-lib-apply" type="button" title="選択したポーズを適用">適用</button>
                     <button id="pose-lib-del" type="button" title="選択を削除">削除</button>
                 </span>
             </div>
@@ -1100,7 +1104,7 @@
         <div class="modal" role="dialog" aria-modal="true" aria-labelledby="about-title">
             <div class="modal-title"><span id="about-title">バージョン情報</span><button type="button" data-close title="閉じる">×</button></div>
             <div class="modal-body">
-                <p class="app-logo">VRM Scene Editor <span class="ver" id="about-version">v0.1d</span></p>
+                <p class="app-logo">VRM Scene Editor <span class="ver" id="about-version">v0.1e</span></p>
                 <p class="muted">ComfyUI 用 VRM シーンエディタ / キャプチャノード</p>
                 <dl>
                     <dt>レンダリング</dt><dd>three.js</dd>
@@ -1268,6 +1272,6 @@
             </div>
         </div>
     </div>
-    <script type="module" src="/vrm-scene-editor-assets/main.js?v=107"></script>
+    <script type="module" src="/vrm-scene-editor-assets/main.js?v=115"></script>
 </body>
 </html>

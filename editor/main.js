@@ -2359,10 +2359,21 @@ function persistPanelGeometry(id, key) {
     try {
         const s = JSON.parse(localStorage.getItem(key));
         if (s) {
-            if (typeof s.left === "number") { el.style.left = s.left + "px"; el.style.right = "auto"; }
-            if (typeof s.top === "number") el.style.top = s.top + "px";
             if (typeof s.w === "number") el.style.width = s.w + "px";
             if (typeof s.h === "number") el.style.height = s.h + "px";
+            // 復元位置はビューポート内にクランプする。ウィンドウ/エディタ幅が
+            // 保存時より狭いと、右寄せパネル(例: ハンドポーズパレット)の left が
+            // 画面外になり、戻らず「表示されない」状態になるのを防ぐ（バグ4）。
+            const pw = (typeof s.w === "number") ? s.w : el.offsetWidth;
+            const ph = (typeof s.h === "number") ? s.h : el.offsetHeight;
+            if (typeof s.left === "number") {
+                const maxL = Math.max(0, window.innerWidth - pw - 8);
+                el.style.left = Math.max(0, Math.min(s.left, maxL)) + "px"; el.style.right = "auto";
+            }
+            if (typeof s.top === "number") {
+                const maxT = Math.max(0, window.innerHeight - ph - 8);
+                el.style.top = Math.max(0, Math.min(s.top, maxT)) + "px";
+            }
         }
     } catch (_) { /* defaults */ }
     const save = () => {
@@ -2657,7 +2668,8 @@ function updateBoneTreeValues() {
 })();
 
 // ---- ポーズサムネ: 同梱サンプルをフラット青のマネキンにして、ポーズを当てて撮影 ----
-const POSE_THUMB_SIZE = 96, POSE_THUMB_QUALITY = 0.72;
+const POSE_THUMB_SIZE = 128, POSE_THUMB_QUALITY = 0.9;
+const POSE_THUMB_RENDER = POSE_THUMB_SIZE * 3; // 3倍で描いて縮小＝スーパーサンプリングAA
 let _poseThumbR = null, _poseThumbScene = null, _poseThumbCam = null, _poseMannequin = null, _poseMannequinLoading = null;
 function _initPoseThumb() {
     if (_poseThumbR) return;
@@ -2701,6 +2713,25 @@ function _framePoseCam(vrm) {
     _poseThumbCam.lookAt(center.x, center.y, center.z);
     _poseThumbCam.updateProjectionMatrix();
 }
+// 高解像ソースを段階的に1/2縮小→高品質スムージングで正方形サムネ化（スーパーサンプリングAA）。
+// ハンド/ポーズ両サムネ共通。src は canvas、(sx,sy,sideLen) は元の正方形クロップ範囲。
+function squareThumbDataURL(src, sx, sy, sideLen, outSize, quality) {
+    let cur = src, cx = sx, cy = sy, cw = sideLen;
+    while (cw > outSize * 2) { // 一気に縮めるより1/2ずつの方が滑らか
+        const half = Math.max(outSize, Math.round(cw / 2));
+        const tmp = document.createElement("canvas"); tmp.width = half; tmp.height = half;
+        const t = tmp.getContext("2d");
+        t.imageSmoothingEnabled = true; t.imageSmoothingQuality = "high";
+        t.drawImage(cur, cx, cy, cw, cw, 0, 0, half, half);
+        cur = tmp; cx = 0; cy = 0; cw = half;
+    }
+    const c = document.createElement("canvas"); c.width = outSize; c.height = outSize;
+    const ctx = c.getContext("2d");
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+    ctx.fillStyle = "#1a1a1a"; ctx.fillRect(0, 0, outSize, outSize);
+    ctx.drawImage(cur, cx, cy, cw, cw, 0, 0, outSize, outSize);
+    return c.toDataURL("image/jpeg", quality);
+}
 async function renderPoseThumb(poseText) {
     const vrm = await loadPoseMannequin();
     if (!vrm) return "";
@@ -2712,7 +2743,11 @@ async function renderPoseThumb(poseText) {
     vrm.scene.updateWorldMatrix(true, true);
     _framePoseCam(vrm);
     let url = "";
-    try { _poseThumbR.render(_poseThumbScene, _poseThumbCam); url = _poseThumbR.domElement.toDataURL("image/jpeg", POSE_THUMB_QUALITY); } catch (_) {}
+    _poseThumbR.setSize(POSE_THUMB_RENDER, POSE_THUMB_RENDER, false); // 高解像で描画
+    try {
+        _poseThumbR.render(_poseThumbScene, _poseThumbCam);
+        url = squareThumbDataURL(_poseThumbR.domElement, 0, 0, POSE_THUMB_RENDER, POSE_THUMB_SIZE, POSE_THUMB_QUALITY);
+    } catch (_) {}
     return url;
 }
 
@@ -2723,6 +2758,7 @@ async function renderPoseThumb(poseText) {
     const countEl = document.getElementById("pose-lib-count");
     const reloadBtn = document.getElementById("pose-lib-reload");
     const delBtn = document.getElementById("pose-lib-del");
+    const applyBtn = document.getElementById("pose-lib-apply");
     const closeBtn = document.getElementById("pose-lib-close");
     let poses = [];
     let selectedPose = -1;
@@ -2731,6 +2767,7 @@ async function renderPoseThumb(poseText) {
     const updateStatus = () => {
         if (countEl) countEl.textContent = `${poses.length}件`;
         if (delBtn) delBtn.disabled = selectedPose < 0;
+        if (applyBtn) applyBtn.disabled = selectedPose < 0;
     };
 
     // 未生成サムネを順番に描画→保存（同梱サンプルのフラット青マネキン）
@@ -2786,8 +2823,9 @@ async function renderPoseThumb(poseText) {
                 selectedPose = idx;
                 for (const c of grid.querySelectorAll(".plib-card.selected")) c.classList.remove("selected");
                 card.classList.add("selected"); updateStatus();
+                applyFile(p); // クリックで即適用（dblclickはサムネ遅延読込のレイアウトシフトで発火しないため）
             });
-            card.addEventListener("dblclick", () => applyFile(p)); // ダブルクリックで適用
+            card.addEventListener("dblclick", () => applyFile(p)); // 保険（環境によりdblclickも）
             grid.appendChild(card);
         });
         pumpThumbs();
@@ -2822,6 +2860,10 @@ async function renderPoseThumb(poseText) {
     }
 
     if (reloadBtn) reloadBtn.addEventListener("click", load);
+    if (applyBtn) applyBtn.addEventListener("click", () => { // 選択中ポーズを適用
+        if (selectedPose < 0) { showToast("ポーズを選択してください", "info", 2000); return; }
+        const p = poses[selectedPose]; if (p) applyFile(p);
+    });
     if (delBtn) delBtn.addEventListener("click", deleteSelected);
     if (closeBtn) closeBtn.addEventListener("click", () => { panel.hidden = true; });
 
@@ -3863,11 +3905,23 @@ function renderTypeDataURL(type, res, transparent) {
         // Render to a res×res drawing buffer (pixelRatio 1 = exact size). CSS size
         // is left untouched (updateStyle=false), and we restore + redraw before
         // yielding, so the on-screen canvas never visibly flickers.
+        // "image" だけ 2倍解像度で描いて縮小＝スーパーサンプリングAA（線のジャギ低減）。
+        // mask/depth/normal/seg は画素値が意味を持つため等倍のまま（補間で値が壊れる）。
+        const SS = (type === "image") ? 2 : 1;
         renderer.setPixelRatio(1);
-        renderer.setSize(res, res, false);
+        renderer.setSize(res * SS, res * SS, false);
         if (type === "seg") renderSeg(); // 含めるモデルを1体ずつ体色/手色で重ね描き
         else renderCapture(); // "image" -> bake bloom/grade in; mask/depth/normal render raw (override material set)
-        dataURL = renderer.domElement.toDataURL("image/png");
+        if (SS === 1) {
+            dataURL = renderer.domElement.toDataURL("image/png");
+        } else {
+            // 高品質スムージングで res×res に縮小（透過は維持＝背景は塗らない）。
+            const oc = document.createElement("canvas"); oc.width = res; oc.height = res;
+            const octx = oc.getContext("2d");
+            octx.imageSmoothingEnabled = true; octx.imageSmoothingQuality = "high";
+            octx.drawImage(renderer.domElement, 0, 0, res * SS, res * SS, 0, 0, res, res);
+            dataURL = oc.toDataURL("image/png");
+        }
     } finally {
         scene.overrideMaterial = saved.overrideMaterial;
         scene.background = saved.background;
@@ -4776,10 +4830,43 @@ function updateHandFocus() {
     // 注: orbit.target は enter 時に手首へ合わせるだけにする。毎フレーム上書きすると
     //     右ドラッグ(パン)が効かなくなるため、ここでは更新しない（フォーカス中は手首は静止）。
 }
+// フォーカス中だけ「手以外（袖・体・装飾）」を非表示にする。マテリアルには触れず
+// (MToon互換のため)、各スキンメッシュのインデックスを aHand(手ボーン支配=1) の三角形
+// だけに差し替える。終了時に元のインデックスへ戻すだけの可逆・描画限定の処理（バグ2）。
+let _handIsoGeoms = []; // [{ geo, origIndex }]
+function enableHandIsolation(vrm) {
+    disableHandIsolation();
+    if (!vrm) return;
+    vrm.scene.traverse((o) => {
+        if (!o.isSkinnedMesh) return;
+        const g = o.geometry;
+        const aHand = g.getAttribute("aHand"); // computeHandMaskAttr が読込時に付与
+        const idx = g.getIndex();
+        if (!aHand || !idx) return; // 非インデックス/未タグは対象外（フル表示のまま）
+        const src = idx.array;
+        const out = [];
+        for (let i = 0; i + 2 < src.length; i += 3) {
+            const a = src[i], b2 = src[i + 1], c = src[i + 2];
+            // 1頂点でも手ならその三角形を残す（手首の境界を欠けさせない）。
+            if (aHand.getX(a) > 0.5 || aHand.getX(b2) > 0.5 || aHand.getX(c) > 0.5) out.push(a, b2, c);
+        }
+        _handIsoGeoms.push({ geo: g, origIndex: idx });
+        g.setIndex(new THREE.BufferAttribute(new Uint32Array(out), 1)); // 空=そのメッシュは全消し(袖など)
+    });
+}
+function disableHandIsolation() {
+    for (const { geo, origIndex } of _handIsoGeoms) geo.setIndex(origIndex);
+    _handIsoGeoms = [];
+}
 function enterHandFocus(side) {
     if (!currentVRM) { showToast("VRMが読み込まれていません", "error", 2000); return; }
     const b = handFocusBones(side);
     if (!b) { showToast("手のボーンが見つかりません", "error", 2000); return; }
+    // 既にフォーカス中（左右の切替）なら一旦クリーンに戻してから入り直す。
+    // exit を通さず再入室すると、保存スナップショット(カメラ/モデル表示)が
+    // ズーム後の状態で上書きされ、クリップ平面・FK選択・ハンドル縮小も
+    // 前の側のまま残って手のポーズが壊れて見える（バグ3）。
+    if (handFocusActive) exitHandFocus();
     handFocusSide = side;
     // 対象外モデルはフォーカス中だけ非表示にする（クリップ平面はアクティブモデルの
     // 手首基準なので、他モデルが切り残されて見えてしまうのを防ぐ）。
@@ -4791,6 +4878,7 @@ function enterHandFocus(side) {
     // 制御点が近接カメラで大きく見えるので、フォーカス中の指/手首ハンドルは縮小
     for (const h of boneHandles) if (isHandFocusBone(h.name)) h.mesh.scale.setScalar(HAND_FOCUS_HANDLE_SCALE);
     renderer.clippingPlanes = [_handClipPlane]; // 手首から先だけ描画
+    enableHandIsolation(currentVRM); // 手以外(袖・体・装飾)を非表示（バグ2）
     updateHandFocus();
     // カメラを手に寄せる（現在の視線方向を維持して距離だけ詰める）
     b.hand.getWorldPosition(_hfWrist);
@@ -4811,6 +4899,7 @@ function exitHandFocus() {
     handFocusActive = false;
     handFocusSide = null;
     renderer.clippingPlanes = []; // クリッピング解除
+    disableHandIsolation();        // 手以外の表示を元に戻す（バグ2）
     if (_handFocusSaved) {
         camera.position.copy(_handFocusSaved.camPos);
         orbit.target.copy(_handFocusSaved.target);
@@ -4921,29 +5010,26 @@ function applyHandPoseLib(idx) {
     applyHandEditAll(side);     // 選んだ手に適用（左右自動ミラー）
 }
 // 現在フォーカス中の手を正方形サムネに（補助点を隠し、手首クリップ＋クリーン背景でオフスクリーン描画）
-const HAND_THUMB_SIZE = 64;        // 縮小保存（小さめ）
-const HAND_THUMB_QUALITY = 0.72;   // JPEG品質（PNGより大幅に軽量）
+const HAND_THUMB_SIZE = 128;       // 保存サイズ（CSS表示96px。Retina/縮小耐性で128）
+const HAND_THUMB_QUALITY = 0.9;    // JPEG品質（小サイズなので高品質でも軽量）
 function renderHandThumb() {
     if (!handFocusActive) return "";
-    try { _initThumb(); } catch (_) { return ""; }
+    // 撮影と同じメインレンダラ(preserveDrawingBuffer)で1フレーム描いて読む。
+    // 別コンテキスト(_thumbR)でライブのメインsceneを描くと、メインレンダラと
+    // スキンメッシュを共有するため2枚目以降が空になる（バグ5）。フォーカス中は
+    // メインレンダラに手首クリップ平面が設定済みなので見た目は従来どおり。
     const prevEdit = _editVisible;
-    setEditVisible(false);                 // 制御点を隠す
-    const prevBg = scene.background;
-    scene.background = null;
-    _thumbR.setSize(HAND_THUMB_SIZE, HAND_THUMB_SIZE, false);
-    _thumbR.setClearColor(0x1a1a1a, 1);
-    _thumbCam.aspect = 1; _thumbCam.fov = camera.fov;
-    _thumbCam.position.copy(camera.position);
-    _thumbCam.quaternion.copy(camera.quaternion);
-    _thumbCam.updateProjectionMatrix();
-    const prevClip = _thumbR.clippingPlanes;
-    _thumbR.clippingPlanes = [_handClipPlane];
+    setEditVisible(false);                  // 制御点を隠す
     let url = "";
-    try { _thumbR.render(scene, _thumbCam); url = _thumbR.domElement.toDataURL("image/jpeg", HAND_THUMB_QUALITY); } catch (_) {}
-    _thumbR.clippingPlanes = prevClip;
-    _thumbR.setSize(THUMB_W, THUMB_H, false); // モデルサムネ用サイズに戻す
-    scene.background = prevBg;
+    try {
+        renderer.render(scene, camera);     // 制御点なしの素のフレームを描画
+        const src = renderer.domElement;
+        const sideLen = Math.min(src.width, src.height); // 中央正方形をクロップ
+        const sx = (src.width - sideLen) / 2, sy = (src.height - sideLen) / 2;
+        url = squareThumbDataURL(src, sx, sy, sideLen, HAND_THUMB_SIZE, HAND_THUMB_QUALITY); // 共通AA縮小
+    } catch (_) {}
     setEditVisible(prevEdit);               // 制御点を戻す
+    renderView();                           // 通常表示に戻す(ポストFX考慮)
     return url;
 }
 
@@ -4952,6 +5038,7 @@ function updateHplStatus() {
     const cnt = document.getElementById("hpl-count"); if (cnt) cnt.textContent = `${handPoseLib.length}件`;
     const del = document.getElementById("hpl-del"); if (del) del.disabled = selectedHandPose < 0;
     const add = document.getElementById("hpl-add"); if (add) add.disabled = !handFocusActive;
+    const ap = document.getElementById("hpl-apply"); if (ap) ap.disabled = !handFocusActive || selectedHandPose < 0;
 }
 function renderHandPalette() {
     const list = document.getElementById("hpl-list"); if (!list) return;
@@ -4969,8 +5056,9 @@ function renderHandPalette() {
             selectedHandPose = idx;
             for (const c of list.querySelectorAll(".hpl-card.selected")) c.classList.remove("selected");
             card.classList.add("selected"); updateHplStatus();
+            applyHandPoseLib(idx); // クリックで即適用（dblclickは発火が不安定なため）
         });
-        card.addEventListener("dblclick", () => applyHandPoseLib(idx)); // ダブルクリックで適用
+        card.addEventListener("dblclick", () => applyHandPoseLib(idx)); // 保険
         list.appendChild(card);
     });
     updateHplStatus();
@@ -5017,6 +5105,12 @@ function deleteSelectedHandPose() {
     persistPanelGeometry("hand-pose-palette", "vrmSceneEditor.handPalGeom");
     const hplDel = document.getElementById("hpl-del");
     if (hplDel) hplDel.addEventListener("click", deleteSelectedHandPose);
+    const hplApply = document.getElementById("hpl-apply"); // 選択中のハンドポーズを適用
+    if (hplApply) hplApply.addEventListener("click", () => {
+        if (!handFocusActive) { showToast("ハンド編集中に適用できます", "error", 2000); return; }
+        if (selectedHandPose < 0) { showToast("ハンドポーズを選択してください", "info", 2000); return; }
+        applyHandPoseLib(selectedHandPose);
+    });
     // 追加 → ポーズ名登録オーバーレイ
     const nameModal = document.getElementById("hand-pose-name-modal");
     const nameInput = document.getElementById("hpn-input");
@@ -5454,7 +5548,7 @@ function loadRefImage(file) {
 })();
 
 (function setupHelpDialogs() {
-    const APP_VERSION = "v0.1a";
+    const APP_VERSION = "v0.1e";
     const badgeVer = document.querySelector("#app-badge .ver");
     const aboutVer = document.getElementById("about-version");
     if (badgeVer) badgeVer.textContent = APP_VERSION;

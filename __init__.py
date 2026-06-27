@@ -211,7 +211,13 @@ def _register_routes():
     async def _vrm_scene_editor_page(_request):
         if not _INDEX_HTML.exists():
             return web.Response(status=404, text="VRM Scene Editor index.html not found")
-        return web.FileResponse(_INDEX_HTML)
+        # Never cache the page itself: it carries the ?v= cache-buster for main.js,
+        # so a stale index.html would keep loading an old main.js even after edits.
+        return web.FileResponse(_INDEX_HTML, headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        })
 
     @instance.routes.get(VRM_SCENE_EDITOR_PATH + "/default-folder")
     async def _vrm_scene_editor_default_folder(_request):
