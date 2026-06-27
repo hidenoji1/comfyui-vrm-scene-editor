@@ -428,6 +428,36 @@ def _register_routes():
             return web.json_response({"error": str(exc)}, status=500)
         return web.json_response({"ok": True, "thumb": out.name})
 
+    @instance.routes.post(VRM_SCENE_EDITOR_PATH + "/save-pose")
+    async def _vrm_scene_editor_save_pose(request):
+        """Save the current pose as models/pose/<name>.json (editor's generic format)."""
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        name = data.get("name", "")
+        pose = data.get("pose")
+        if not isinstance(pose, dict) or not isinstance(pose.get("bones"), dict):
+            return web.json_response({"error": "missing pose data"}, status=400)
+        stem = _UNSAFE_RE.sub("_", str(name)).strip("_") or "pose"
+        out = _POSE_DIR / (stem + ".json")
+        try:
+            out.resolve().relative_to(_POSE_DIR.resolve())
+        except ValueError:
+            return web.json_response({"error": "access denied"}, status=403)
+        # 同名があれば連番を付けて上書きを防ぐ（pose -> pose-2 -> pose-3 ...）。
+        if out.exists():
+            n = 2
+            while (_POSE_DIR / f"{stem}-{n}.json").exists():
+                n += 1
+            out = _POSE_DIR / f"{stem}-{n}.json"
+        try:
+            _POSE_DIR.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(pose, ensure_ascii=False), encoding="utf-8")
+        except OSError as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+        return web.json_response({"ok": True, "file": out.name})
+
     @instance.routes.post(VRM_SCENE_EDITOR_PATH + "/delete-pose")
     async def _vrm_scene_editor_delete_pose(request):
         """Delete a pose file in models/pose (and its .png thumbnail)."""

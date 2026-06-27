@@ -2732,6 +2732,19 @@ function squareThumbDataURL(src, sx, sy, sideLen, outSize, quality) {
     ctx.drawImage(cur, cx, cy, cw, cw, 0, 0, outSize, outSize);
     return c.toDataURL("image/jpeg", quality);
 }
+// 任意のオブジェクトを指定カメラのビューZで囲む深度レンジを DEPTH_MATERIAL に設定。
+const _dthCorner = new THREE.Vector3();
+function setDepthRangeForObject(obj, cam) {
+    cam.updateMatrixWorld();
+    const box = new THREE.Box3().setFromObject(obj);
+    if (box.isEmpty()) return;
+    let minD = Infinity, maxD = -Infinity;
+    for (let i = 0; i < 8; i++) {
+        _dthCorner.set(i & 1 ? box.max.x : box.min.x, i & 2 ? box.max.y : box.min.y, i & 4 ? box.max.z : box.min.z).applyMatrix4(cam.matrixWorldInverse);
+        const d = -_dthCorner.z; if (d < minD) minD = d; if (d > maxD) maxD = d;
+    }
+    if (maxD > minD) { DEPTH_MATERIAL.uniforms.uNear.value = Math.max(0.001, minD); DEPTH_MATERIAL.uniforms.uFar.value = maxD; }
+}
 async function renderPoseThumb(poseText) {
     const vrm = await loadPoseMannequin();
     if (!vrm) return "";
@@ -2742,12 +2755,17 @@ async function renderPoseThumb(poseText) {
     vrm.humanoid.update();
     vrm.scene.updateWorldMatrix(true, true);
     _framePoseCam(vrm);
+    // ディプス表示: フラット青より姿勢が読み取りやすい。マネキンの深度レンジで正規化。
+    setDepthRangeForObject(vrm.scene, _poseThumbCam);
+    const prevOverride = _poseThumbScene.overrideMaterial;
+    _poseThumbScene.overrideMaterial = DEPTH_MATERIAL;
     let url = "";
     _poseThumbR.setSize(POSE_THUMB_RENDER, POSE_THUMB_RENDER, false); // 高解像で描画
     try {
         _poseThumbR.render(_poseThumbScene, _poseThumbCam);
         url = squareThumbDataURL(_poseThumbR.domElement, 0, 0, POSE_THUMB_RENDER, POSE_THUMB_SIZE, POSE_THUMB_QUALITY);
     } catch (_) {}
+    _poseThumbScene.overrideMaterial = prevOverride;
     return url;
 }
 
@@ -2756,9 +2774,9 @@ async function renderPoseThumb(poseText) {
     if (!panel) return;
     const grid = document.getElementById("pose-lib-grid");
     const countEl = document.getElementById("pose-lib-count");
-    const reloadBtn = document.getElementById("pose-lib-reload");
     const delBtn = document.getElementById("pose-lib-del");
     const applyBtn = document.getElementById("pose-lib-apply");
+    const addBtn = document.getElementById("pose-lib-add");
     const closeBtn = document.getElementById("pose-lib-close");
     let poses = [];
     let selectedPose = -1;
@@ -2768,35 +2786,10 @@ async function renderPoseThumb(poseText) {
         if (countEl) countEl.textContent = `${poses.length}件`;
         if (delBtn) delBtn.disabled = selectedPose < 0;
         if (applyBtn) applyBtn.disabled = selectedPose < 0;
+        // 追加は常時有効（押下時に currentVRM 有無をチェック）。
     };
 
-    // 未生成サムネを順番に描画→保存（同梱サンプルのフラット青マネキン）
-    const thumbQueue = [];
-    let thumbing = false;
-    async function pumpThumbs() {
-        if (thumbing) return; thumbing = true;
-        while (thumbQueue.length) {
-            const { p, imgEl } = thumbQueue.shift();
-            if (!imgEl.isConnected) continue;
-            let text;
-            try {
-                const res = await fetch("/vrm-scene-editor/pose?file=" + encodeURIComponent(p.file));
-                if (!res.ok) throw new Error("HTTP " + res.status);
-                text = await res.text();
-            } catch (_) { continue; }
-            const url = await renderPoseThumb(text);
-            if (!url || !imgEl.isConnected) continue;
-            imgEl.src = url;
-            fetch("/vrm-scene-editor/save-pose-thumbnail", { // 次回から即表示
-                method: "POST", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ file: p.file, image: url }),
-            }).catch(() => {});
-        }
-        thumbing = false;
-    }
-
     async function load() {
-        thumbQueue.length = 0;
         grid.innerHTML = '<div class="plib-empty">読込中 ...</div>';
         selectedPose = -1;
         let data;
@@ -2814,21 +2807,20 @@ async function renderPoseThumb(poseText) {
         grid.innerHTML = "";
         poses.forEach((p, idx) => {
             const card = document.createElement("div"); card.className = "plib-card"; card.title = p.file;
-            const img = document.createElement("img"); img.className = "plib-thumb"; img.alt = "";
-            if (p.thumb) img.src = poseThumbUrl(p.thumb) + "?t=" + Date.now(); // 保存済みサムネ
-            else thumbQueue.push({ p, imgEl: img });                          // 未生成→後で描画＆保存
+            let thumbEl; // 保存済みサムネ画像を表示。無ければ No Image（その場では描画しない）
+            if (p.thumb) { thumbEl = document.createElement("img"); thumbEl.className = "plib-thumb"; thumbEl.alt = ""; thumbEl.src = poseThumbUrl(p.thumb) + "?t=" + Date.now(); } // ?t: 旧キャッシュ回避
+            else { thumbEl = document.createElement("div"); thumbEl.className = "plib-thumb plib-noimg"; thumbEl.textContent = "No Image"; }
             const nm = document.createElement("span"); nm.className = "plib-name"; nm.textContent = p.name;
-            card.append(img, nm);
+            card.append(thumbEl, nm);
             card.addEventListener("click", () => {
                 selectedPose = idx;
                 for (const c of grid.querySelectorAll(".plib-card.selected")) c.classList.remove("selected");
                 card.classList.add("selected"); updateStatus();
-                applyFile(p); // クリックで即適用（dblclickはサムネ遅延読込のレイアウトシフトで発火しないため）
+                applyFile(p); // クリックで即適用
             });
             card.addEventListener("dblclick", () => applyFile(p)); // 保険（環境によりdblclickも）
             grid.appendChild(card);
         });
-        pumpThumbs();
     }
 
     async function applyFile(p) {
@@ -2859,7 +2851,70 @@ async function renderPoseThumb(poseText) {
         });
     }
 
-    if (reloadBtn) reloadBtn.addEventListener("click", load);
+    // 現在の全身ポーズを models/pose/<名前>.json に保存（applyVroidPose が読み戻せる
+    // 汎用形式 {bones:{vrmBoneName:{x,y,z,w}}}。正規化ボーンの回転をそのまま書き出す）。
+    function currentBodyPose() {
+        const h = currentVRM?.humanoid; if (!h) return null;
+        const bones = {};
+        let nonIdentity = 0;
+        // 全ヒューマンボーン（体＋手指）を捕捉。シーン保存と同じく正規化ボーンの回転を読む。
+        for (const bn of Object.keys(h.humanBones || {})) {
+            const n = h.getNormalizedBoneNode(bn);
+            if (!n) continue;
+            const q = n.quaternion;
+            bones[bn] = { x: +q.x.toFixed(6), y: +q.y.toFixed(6), z: +q.z.toFixed(6), w: +q.w.toFixed(6) };
+            if (Math.abs(q.x) > 1e-4 || Math.abs(q.y) > 1e-4 || Math.abs(q.z) > 1e-4 || q.w < 0.9999) nonIdentity++;
+        }
+        return { bones, nonIdentity };
+    }
+    async function saveCurrentPose(name) {
+        if (!currentVRM) { showToast("VRMが読み込まれていません", "error", 2000); return; }
+        const cap = currentBodyPose(); if (!cap) return;
+        if (!cap.nonIdentity) showToast("ポーズが付いていません（棒立ち）。先にモデルをポーズしてください", "info", 3000);
+        const pose = { bones: cap.bones }; // 保存・適用に使うのは bones のみ
+        // 最新の一覧を取得して重複しない名前を決める（サーバ連番化が無くても上書きしない）。
+        let taken = new Set();
+        try { taken = new Set(((await (await fetch("/vrm-scene-editor/poses")).json()).poses || []).map((p) => p.name)); } catch (_) {}
+        let base = (name || "").trim();
+        if (!base) { let n = 1; while (taken.has(`pose-${n}`)) n++; base = `pose-${n}`; }
+        else if (taken.has(base)) { let n = 2; while (taken.has(`${base}-${n}`)) n++; base = `${base}-${n}`; }
+        name = base;
+        try {
+            const res = await fetch("/vrm-scene-editor/save-pose", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name, pose }),
+            });
+            const r = await res.json();
+            if (!res.ok) throw new Error(r.error || res.status);
+            // サムネ = 今見えているビューをそのままキャプチャ（追加時に1回だけ保存）。
+            try {
+                const thumb = captureViewThumb();
+                if (thumb) await fetch("/vrm-scene-editor/save-pose-thumbnail", {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ file: r.file, image: thumb }),
+                });
+            } catch (_) {}
+            showToast(`ポーズ保存: ${r.file}`, "success", 2000);
+            load(); // 一覧更新
+        } catch (e) { showToast(`保存失敗: ${e.message || e}`, "error", 3000); }
+    }
+    // 追加 → 名前入力オーバーレイ
+    const pnModal = document.getElementById("pose-name-modal");
+    const pnInput = document.getElementById("pn-input");
+    const pnOk = document.getElementById("pn-ok");
+    const pnClose = () => { if (pnModal) pnModal.hidden = true; };
+    const pnOpen = () => {
+        if (!currentVRM) { showToast("VRMが読み込まれていません", "error", 2000); return; }
+        if (pnInput) { pnInput.value = ""; pnInput.placeholder = `pose-${poses.length + 1}`; }
+        if (pnModal) pnModal.hidden = false;
+        if (pnInput) pnInput.focus();
+    };
+    const pnSubmit = () => { saveCurrentPose(pnInput ? pnInput.value : ""); pnClose(); };
+    if (addBtn) addBtn.addEventListener("click", pnOpen);
+    if (pnOk) pnOk.addEventListener("click", pnSubmit);
+    if (pnInput) pnInput.addEventListener("keydown", (e) => { if (e.key === "Enter") pnSubmit(); });
+    if (pnModal) pnModal.addEventListener("click", (e) => { if (e.target === pnModal || e.target.closest("[data-close]")) pnClose(); });
+
     if (applyBtn) applyBtn.addEventListener("click", () => { // 選択中ポーズを適用
         if (selectedPose < 0) { showToast("ポーズを選択してください", "info", 2000); return; }
         const p = poses[selectedPose]; if (p) applyFile(p);
@@ -3266,8 +3321,8 @@ const HAND_MASK_MATERIAL = new THREE.ShaderMaterial({
 // surface gets a correct camera-facing normal.
 const NORMAL_MATERIAL = new THREE.MeshNormalMaterial({ side: THREE.DoubleSide });
 
-// "seg": 体と手を塗り分けるセグメンテーション。頂点の aHand（手ボーン支配=1）で
-// 体色/手色を選ぶ。色はモデルごとに割り当て（uniformで差し替え、1体ずつ重ね描き）。
+// "seg": モデルごとに1色で塗るセグメンテーション（手の色分けはしない）。
+// 色はモデルごとに割り当て（uniformで差し替え、1体ずつ重ね描き）。
 const SEG_MATERIAL = new THREE.ShaderMaterial({
     side: THREE.DoubleSide,
     uniforms: { uBody: { value: new THREE.Color(0.25, 0.5, 0.9) }, uHand: { value: new THREE.Color(0.6, 0.8, 1.0) } },
@@ -3286,10 +3341,8 @@ const SEG_MATERIAL = new THREE.ShaderMaterial({
     `,
     fragmentShader: `
         uniform vec3 uBody;
-        uniform vec3 uHand;
-        varying float vHand;
         void main() {
-            gl_FragColor = vec4(vHand > 0.5 ? uHand : uBody, 1.0);
+            gl_FragColor = vec4(uBody, 1.0); // モデルごとに1色（手の色分けはしない）
         }
     `,
 });
@@ -4527,6 +4580,23 @@ function renderPost(outTarget) {
     renderer.setRenderTarget(null);
 }
 function renderView() { if (anyPostFx()) renderPost(null); else renderer.render(scene, camera); }
+// 今見えているビューを正方形サムネ(dataURL)にする。制御点だけ隠して1フレーム描き、
+// メインキャンバスの中央正方形を切り出して縮小。深度/マネキン不要のシンプル版。
+function captureViewThumb(size = 128, quality = 0.85) {
+    const prevEdit = _editVisible;
+    setEditVisible(false); // 制御点を隠す
+    let url = "";
+    try {
+        renderView(); // 現在の見た目（ポストFX反映）で1フレーム描画
+        const src = renderer.domElement;
+        const sideLen = Math.min(src.width, src.height);
+        const sx = (src.width - sideLen) / 2, sy = (src.height - sideLen) / 2;
+        url = squareThumbDataURL(src, sx, sy, sideLen, size, quality);
+    } catch (_) {}
+    setEditVisible(prevEdit);
+    renderView(); // 制御点を戻して再描画
+    return url;
+}
 // Capture render: the beauty image (no override material) gets the post-effects baked in;
 // data passes (mask/depth/normal set an overrideMaterial) always render raw so they stay clean.
 function renderCapture() {
@@ -4830,32 +4900,71 @@ function updateHandFocus() {
     // 注: orbit.target は enter 時に手首へ合わせるだけにする。毎フレーム上書きすると
     //     右ドラッグ(パン)が効かなくなるため、ここでは更新しない（フォーカス中は手首は静止）。
 }
-// フォーカス中だけ「手以外（袖・体・装飾）」を非表示にする。マテリアルには触れず
-// (MToon互換のため)、各スキンメッシュのインデックスを aHand(手ボーン支配=1) の三角形
-// だけに差し替える。終了時に元のインデックスへ戻すだけの可逆・描画限定の処理（バグ2）。
-let _handIsoGeoms = []; // [{ geo, origIndex }]
-function enableHandIsolation(vrm) {
+// フォーカス中だけ「焦点側の手の肌だけ」を残し、服・髪・装飾・反対の手を非表示にする。
+// マテリアルには触れず(MToon互換)、各スキンメッシュのインデックス/グループを差し替える。
+// 残す三角形 = 「焦点側の手首+指ボーンへのウェイト>0.5」かつ「肌(SKIN)マテリアル」。
+// VRoid系のマテリアル名(..._SKIN / ..._CLOTH / ..._HAIR)で肌/服を判別。袖口が手ボーンに
+// ウェイトされていても CLOTH なので除外できる。SKINマテリアルが無いモデルでは素材判定を
+// せずウェイトのみで残す（フォールバック）。終了時に元へ戻す可逆・描画限定処理（バグ2）。
+let _handIsoGeoms = []; // [{ geo, origIndex, origGroups }]
+const _isSkinMat = (m) => /SKIN/i.test((m && m.name) || "");
+function enableHandIsolation(vrm, side) {
     disableHandIsolation();
-    if (!vrm) return;
+    if (!vrm || !vrm.humanoid) return;
+    const h = vrm.humanoid;
+    const boneSet = new Set();
+    for (const nm of OP_HAND_BONES[side]) { const b = h.getRawBoneNode(nm); if (b) boneSet.add(b); }
+    if (!boneSet.size) return;
+    let hasSkinMat = false; // VRoid系か（肌マテリアルを持つか）
     vrm.scene.traverse((o) => {
         if (!o.isSkinnedMesh) return;
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        if (mats.some(_isSkinMat)) hasSkinMat = true;
+    });
+    vrm.scene.traverse((o) => {
+        if (!o.isSkinnedMesh || !o.skeleton) return;
         const g = o.geometry;
-        const aHand = g.getAttribute("aHand"); // computeHandMaskAttr が読込時に付与
+        const si = g.attributes.skinIndex, sw = g.attributes.skinWeight;
         const idx = g.getIndex();
-        if (!aHand || !idx) return; // 非インデックス/未タグは対象外（フル表示のまま）
-        const src = idx.array;
-        const out = [];
-        for (let i = 0; i + 2 < src.length; i += 3) {
-            const a = src[i], b2 = src[i + 1], c = src[i + 2];
-            // 1頂点でも手ならその三角形を残す（手首の境界を欠けさせない）。
-            if (aHand.getX(a) > 0.5 || aHand.getX(b2) > 0.5 || aHand.getX(c) > 0.5) out.push(a, b2, c);
+        if (!si || !sw || !idx) return; // 非インデックス/非スキンは対象外（フル表示のまま）
+        const isHand = o.skeleton.bones.map((b) => boneSet.has(b)); // skeleton内インデックス→手か
+        const n = si.count;
+        const keep = new Uint8Array(n); // 頂点ごと: その側の手ウェイト合計>0.5
+        for (let v = 0; v < n; v++) {
+            let s = 0;
+            if (isHand[si.getX(v)]) s += sw.getX(v);
+            if (isHand[si.getY(v)]) s += sw.getY(v);
+            if (isHand[si.getZ(v)]) s += sw.getZ(v);
+            if (isHand[si.getW(v)]) s += sw.getW(v);
+            keep[v] = s > 0.5 ? 1 : 0;
         }
-        _handIsoGeoms.push({ geo: g, origIndex: idx });
-        g.setIndex(new THREE.BufferAttribute(new Uint32Array(out), 1)); // 空=そのメッシュは全消し(袖など)
+        const src = idx.array;
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        const hadGroups = !!(g.groups && g.groups.length);
+        const groups = hadGroups ? g.groups : [{ start: 0, count: src.length, materialIndex: 0 }];
+        const out = [];
+        const newGroups = [];
+        for (const grp of groups) {
+            const mat = mats[grp.materialIndex] || mats[0];
+            if (hasSkinMat && !_isSkinMat(mat)) continue; // 服/髪/顔/装飾グループは丸ごと除外
+            const gStart = out.length;
+            const end = Math.min(grp.start + grp.count, src.length);
+            for (let i = grp.start; i + 2 < end; i += 3) {
+                const a = src[i], b2 = src[i + 1], c = src[i + 2];
+                if (keep[a] || keep[b2] || keep[c]) out.push(a, b2, c); // 1頂点でも手なら残す
+            }
+            if (out.length > gStart) newGroups.push({ start: gStart, count: out.length - gStart, materialIndex: grp.materialIndex });
+        }
+        _handIsoGeoms.push({ geo: g, origIndex: idx, origGroups: hadGroups ? g.groups.slice() : null });
+        g.setIndex(new THREE.BufferAttribute(new Uint32Array(out), 1)); // 空=そのメッシュ全消し
+        if (hadGroups) { g.clearGroups(); for (const ng of newGroups) g.addGroup(ng.start, ng.count, ng.materialIndex); }
     });
 }
 function disableHandIsolation() {
-    for (const { geo, origIndex } of _handIsoGeoms) geo.setIndex(origIndex);
+    for (const { geo, origIndex, origGroups } of _handIsoGeoms) {
+        geo.setIndex(origIndex);
+        if (origGroups) { geo.clearGroups(); for (const grp of origGroups) geo.addGroup(grp.start, grp.count, grp.materialIndex); }
+    }
     _handIsoGeoms = [];
 }
 function enterHandFocus(side) {
@@ -4878,7 +4987,7 @@ function enterHandFocus(side) {
     // 制御点が近接カメラで大きく見えるので、フォーカス中の指/手首ハンドルは縮小
     for (const h of boneHandles) if (isHandFocusBone(h.name)) h.mesh.scale.setScalar(HAND_FOCUS_HANDLE_SCALE);
     renderer.clippingPlanes = [_handClipPlane]; // 手首から先だけ描画
-    enableHandIsolation(currentVRM); // 手以外(袖・体・装飾)を非表示（バグ2）
+    enableHandIsolation(currentVRM, side); // 焦点側の手の肌だけ表示（服・髪・装飾・反対の手を除外, バグ2）
     updateHandFocus();
     // カメラを手に寄せる（現在の視線方向を維持して距離だけ詰める）
     b.hand.getWorldPosition(_hfWrist);
@@ -4999,38 +5108,39 @@ function saveHandLib() { localStorage.setItem(HAND_LIB_KEY, JSON.stringify(handP
 function cloneHandParams(st) { return { curl: st.curl.slice(), splay: st.splay.slice(), grip: st.grip, cupping: st.cupping }; }
 function applyHandPoseLib(idx) {
     if (!handFocusActive) return;
-    const p = handPoseLib[idx]; if (!p || !p.params) return;
+    const p = handPoseLib[idx]; if (!p) return;
     const side = handFocusSide;
+    // ボディのポーズパレットと同じく、保存した指ボーン回転を絶対値で直接適用（何度でも効く）。
+    if (p.quats) {
+        const mirror = p.side && p.side !== side; // 反対側に当てる時は左右ミラー
+        for (const b of (handPoseBones[side] || [])) {
+            const arr = p.quats[`${b.finger}-${b.joint}`];
+            if (!arr) continue;
+            // 正規化リストは静止時world整列なので、左右ミラーは (x,-y,-z,w)。
+            b.node.quaternion.set(arr[0], mirror ? -arr[1] : arr[1], mirror ? -arr[2] : arr[2], arr[3]);
+        }
+        if (currentVRM) currentVRM.humanoid.update();
+        handEditState[side] = mkHandEditState(); // スライダーは中立化（以後の操作は rest から）
+        buildHandEditPanel(side);
+        return;
+    }
+    // 旧形式（curl/splay パラメータ）フォールバック
+    if (!p.params) return;
     handEditState[side] = {
         curl: (p.params.curl || [0, 0, 0, 0, 0]).slice(),
         splay: (p.params.splay || [0, 0, 0, 0, 0]).slice(),
         grip: p.params.grip || 0, cupping: p.params.cupping || 0,
     };
-    buildHandEditPanel(side);   // スライダーを読み込んだ値に
-    applyHandEditAll(side);     // 選んだ手に適用（左右自動ミラー）
+    buildHandEditPanel(side);
+    applyHandEditAll(side);
 }
-// 現在フォーカス中の手を正方形サムネに（補助点を隠し、手首クリップ＋クリーン背景でオフスクリーン描画）
+// 現在フォーカス中の手を正方形サムネに。今見えている手のビューをそのまま撮る（ディプス無し）。
+// フォーカス中はメインレンダラに手首クリップ＋手のみ表示が効くので、見たままが手だけになる。
 const HAND_THUMB_SIZE = 128;       // 保存サイズ（CSS表示96px。Retina/縮小耐性で128）
 const HAND_THUMB_QUALITY = 0.9;    // JPEG品質（小サイズなので高品質でも軽量）
 function renderHandThumb() {
     if (!handFocusActive) return "";
-    // 撮影と同じメインレンダラ(preserveDrawingBuffer)で1フレーム描いて読む。
-    // 別コンテキスト(_thumbR)でライブのメインsceneを描くと、メインレンダラと
-    // スキンメッシュを共有するため2枚目以降が空になる（バグ5）。フォーカス中は
-    // メインレンダラに手首クリップ平面が設定済みなので見た目は従来どおり。
-    const prevEdit = _editVisible;
-    setEditVisible(false);                  // 制御点を隠す
-    let url = "";
-    try {
-        renderer.render(scene, camera);     // 制御点なしの素のフレームを描画
-        const src = renderer.domElement;
-        const sideLen = Math.min(src.width, src.height); // 中央正方形をクロップ
-        const sx = (src.width - sideLen) / 2, sy = (src.height - sideLen) / 2;
-        url = squareThumbDataURL(src, sx, sy, sideLen, HAND_THUMB_SIZE, HAND_THUMB_QUALITY); // 共通AA縮小
-    } catch (_) {}
-    setEditVisible(prevEdit);               // 制御点を戻す
-    renderView();                           // 通常表示に戻す(ポストFX考慮)
-    return url;
+    return captureViewThumb(HAND_THUMB_SIZE, HAND_THUMB_QUALITY); // 見たままをキャプチャ
 }
 
 let selectedHandPose = -1;
@@ -5067,7 +5177,12 @@ function addHandPoseWithName(name) {
     if (!handFocusActive) { showToast("ハンド編集中に追加できます", "error", 2000); return; }
     name = (name || "").trim() || `hand-${handPoseLib.length + 1}`;
     const thumb = renderHandThumb();
-    handPoseLib.push({ name, params: cloneHandParams(handEditState[handFocusSide]), thumb });
+    // 実際の指ボーン回転を保存（スライダー/3Dハンドル/プリセット どれで作った形でも正確に再現）。
+    const quats = {};
+    for (const b of (handPoseBones[handFocusSide] || [])) {
+        quats[`${b.finger}-${b.joint}`] = b.node.quaternion.toArray().map((v) => +v.toFixed(6));
+    }
+    handPoseLib.push({ name, side: handFocusSide, quats, thumb });
     saveHandLib();
     selectedHandPose = handPoseLib.length - 1;
     renderHandPalette();
@@ -5548,7 +5663,7 @@ function loadRefImage(file) {
 })();
 
 (function setupHelpDialogs() {
-    const APP_VERSION = "v0.1e";
+    const APP_VERSION = "v0.2f";
     const badgeVer = document.querySelector("#app-badge .ver");
     const aboutVer = document.getElementById("about-version");
     if (badgeVer) badgeVer.textContent = APP_VERSION;

@@ -530,11 +530,11 @@
         #hand-pose-palette .hpl-status-btns #hpl-del:hover { border-color: #e05a48; background: #c0392b; color: #fff; }
         #hand-pose-palette .hpl-status-btns button:disabled { color: #666; border-color: #444; cursor: default; background: #1e1e1e; }
         /* ポーズ名登録オーバーレイ */
-        #hand-pose-name-modal .modal { width: min(340px, 90vw); }
-        #hand-pose-name-modal .hpn-btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
-        #hand-pose-name-modal .hpn-btns button { background: #1e1e1e; color: #e6e6e6; border: 1px solid #555; border-radius: 5px; padding: 6px 18px; font-size: 13px; cursor: pointer; }
-        #hand-pose-name-modal .hpn-btns button#hpn-ok { background: #236692; border-color: #3485bb; }
-        #hand-pose-name-modal .hpn-btns button:hover { border-color: #4a90d9; }
+        #hand-pose-name-modal .modal, #pose-name-modal .modal { width: min(340px, 90vw); }
+        #hand-pose-name-modal .hpn-btns, #pose-name-modal .hpn-btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+        #hand-pose-name-modal .hpn-btns button, #pose-name-modal .hpn-btns button { background: #1e1e1e; color: #e6e6e6; border: 1px solid #555; border-radius: 5px; padding: 6px 18px; font-size: 13px; cursor: pointer; }
+        #hand-pose-name-modal .hpn-btns button#hpn-ok, #pose-name-modal .hpn-btns button#pn-ok { background: #236692; border-color: #3485bb; }
+        #hand-pose-name-modal .hpn-btns button:hover, #pose-name-modal .hpn-btns button:hover { border-color: #4a90d9; }
         /* Pose library panel — bundled *.vroidpose / *.json picker. */
         #pose-lib-panel {
             position: fixed; left: 12px; top: 96px; z-index: 9; width: 250px;
@@ -564,6 +564,7 @@
         #pose-lib-panel .plib-card:hover { background: #34506e; border-color: #4a90d9; }
         #pose-lib-panel .plib-card.selected { outline: 2px solid #4a90d9; outline-offset: -1px; border-color: #4a90d9; background: #27425e; }
         #pose-lib-panel .plib-thumb { width: 100%; aspect-ratio: 1 / 1; object-fit: contain; border-radius: 3px; background: #1a1a1a; display: block; }
+        #pose-lib-panel .plib-thumb.plib-noimg { display: flex; align-items: center; justify-content: center; color: #777; font-size: 11px; }
         #pose-lib-panel .plib-name { font-size: 12px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         #pose-lib-panel .plib-status {
             flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px;
@@ -571,7 +572,7 @@
         }
         #pose-lib-panel .plib-status-btns { display: flex; gap: 6px; }
         #pose-lib-panel .plib-status-btns button { background: #1e1e1e; color: #e6e6e6; border: 1px solid #555; border-radius: 4px; padding: 4px 14px; font-size: 13px; cursor: pointer; }
-        #pose-lib-panel .plib-status-btns #pose-lib-reload:hover { border-color: #3485bb; background: #27425e; }
+        #pose-lib-panel .plib-status-btns #pose-lib-add:hover { border-color: #3485bb; background: #27425e; }
         #pose-lib-panel .plib-status-btns #pose-lib-apply:hover { border-color: #3aa676; background: #27523e; }
         #pose-lib-panel .plib-status-btns #pose-lib-del:hover { border-color: #e05a48; background: #c0392b; color: #fff; }
         #pose-lib-panel .plib-status-btns button:disabled { color: #666; border-color: #444; cursor: default; background: #1e1e1e; }
@@ -740,6 +741,8 @@
         .modal .modal-body .muted { color: #9aa7b3; font-size: 12px; }
         .modal .app-logo { font-size: 16px; font-weight: bold; color: #e6e6e6; }
         .modal .app-logo .ver { color: #6cb6ff; margin-left: 8px; font-weight: normal; }
+        .modal a.ext-link { color: #6cb6ff; text-decoration: none; }
+        .modal a.ext-link:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
@@ -857,7 +860,7 @@
     <div id="viewport">
         <img id="ref-image" alt="">
         <div id="capture-frame"></div>
-        <div id="app-badge">VRM Scene Editor <span class="ver">v0.1e</span></div>
+        <div id="app-badge">VRM Scene Editor <span class="ver">v0.2f</span></div>
         <div id="ref-panel" hidden>
             <div class="rf-title"><span>背景画像</span><button id="ref-close" type="button" title="閉じる">×</button></div>
             <div class="rf-body">
@@ -942,11 +945,12 @@
             <div class="ep-title hpl-title"><span>ハンドポーズパレット</span></div>
             <div class="hpl-grid" id="hpl-list"></div>
             <div class="hpl-status">
-                <span id="hpl-count">0件</span>
+                <span class="hpl-status-btns">
+                    <button id="hpl-del" type="button" title="選択を削除">削除</button>
+                </span>
                 <span class="hpl-status-btns">
                     <button id="hpl-add" type="button" title="現在の手を登録">追加</button>
                     <button id="hpl-apply" type="button" title="選択したハンドポーズを適用">適用</button>
-                    <button id="hpl-del" type="button" title="選択を削除">削除</button>
                 </span>
             </div>
         </div>
@@ -958,6 +962,17 @@
                     <p class="muted">ポーズ名（未入力なら hand-連番）</p>
                     <input id="hpn-input" type="text" class="scene-name" placeholder="hand-...">
                     <div class="hpn-btns"><button id="hpn-ok" type="button">OK</button><button type="button" data-close>キャンセル</button></div>
+                </div>
+            </div>
+        </div>
+        <!-- 全身ポーズ名 保存オーバーレイ -->
+        <div id="pose-name-modal" class="modal-overlay" hidden>
+            <div class="modal" role="dialog" aria-modal="true">
+                <div class="modal-title"><span>ポーズ名を保存</span><button type="button" data-close title="閉じる">×</button></div>
+                <div class="modal-body">
+                    <p class="muted">ポーズ名（未入力なら pose-連番）</p>
+                    <input id="pn-input" type="text" class="scene-name" placeholder="pose-...">
+                    <div class="hpn-btns"><button id="pn-ok" type="button">OK</button><button type="button" data-close>キャンセル</button></div>
                 </div>
             </div>
         </div>
@@ -988,11 +1003,12 @@
             <div class="ep-title"><span>ポーズライブラリ</span><button id="pose-lib-close" type="button" title="閉じる">×</button></div>
             <div class="plib-grid" id="pose-lib-grid"><div class="plib-empty">読込中 ...</div></div>
             <div class="plib-status">
-                <span id="pose-lib-count">0件</span>
                 <span class="plib-status-btns">
-                    <button id="pose-lib-reload" type="button" title="一覧を更新">再読込</button>
-                    <button id="pose-lib-apply" type="button" title="選択したポーズを適用">適用</button>
                     <button id="pose-lib-del" type="button" title="選択を削除">削除</button>
+                </span>
+                <span class="plib-status-btns">
+                    <button id="pose-lib-add" type="button" title="現在のポーズを保存">追加</button>
+                    <button id="pose-lib-apply" type="button" title="選択したポーズを適用">適用</button>
                 </span>
             </div>
         </div>
@@ -1104,12 +1120,13 @@
         <div class="modal" role="dialog" aria-modal="true" aria-labelledby="about-title">
             <div class="modal-title"><span id="about-title">バージョン情報</span><button type="button" data-close title="閉じる">×</button></div>
             <div class="modal-body">
-                <p class="app-logo">VRM Scene Editor <span class="ver" id="about-version">v0.1e</span></p>
+                <p class="app-logo">VRM Scene Editor <span class="ver" id="about-version">v0.2f</span></p>
                 <p class="muted">ComfyUI 用 VRM シーンエディタ / キャプチャノード</p>
                 <dl>
                     <dt>レンダリング</dt><dd>three.js</dd>
                     <dt>VRM</dt><dd>@pixiv/three-vrm</dd>
                     <dt>対応形式</dt><dd>VRM 0.x / VRM 1.0 / glTF / GLB</dd>
+                    <dt>GitHub</dt><dd><a class="ext-link" href="https://github.com/hidenoji1/comfyui-vrm-scene-editor" target="_blank" rel="noopener noreferrer">hidenoji1/comfyui-vrm-scene-editor</a></dd>
                 </dl>
                 <p class="muted">ライセンスの詳細は「ヘルプ &rsaquo; ライセンス」をご覧ください。</p>
             </div>
@@ -1272,6 +1289,6 @@
             </div>
         </div>
     </div>
-    <script type="module" src="/vrm-scene-editor-assets/main.js?v=115"></script>
+    <script type="module" src="/vrm-scene-editor-assets/main.js?v=133"></script>
 </body>
 </html>
