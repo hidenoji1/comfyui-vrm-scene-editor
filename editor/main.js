@@ -723,7 +723,8 @@ function setEditVisible(v) {
     for (const ch of ikChains) if (ch.guide) ch.guide.visible = show;
     updateGazeVisibility(show); // center ball (linked) or per-eye balls (unlinked); hidden under camera-gaze
     fkGizmo.visible = show && !!selectedFK && !_gizmoPassthrough;
-    if (moveGizmo.object) moveGizmo.visible = show;
+    // 足元の移動リグは「選択(矢印)モード」で選択中モデルに表示（ボーンモードでは隠す）。
+    if (moveGizmo.object) moveGizmo.visible = !boneEditEnabled && activeEntryVisible() && !_gizmoPassthrough;
 }
 
 // Build FK spheres (children of normalized bones -> follow the pose) + world-space
@@ -871,6 +872,11 @@ function setupHandPose(vrm) {
     handPoseBones = { left: [], right: [] };
     const humanoid = vrm?.humanoid;
     if (!humanoid) return;
+    // rest(初期角度)はモデル初回ロード時に1回だけ取得し entry.handRest に保存する。
+    // 再アクティブ化時に「ポーズ済みの回転」を rest として取り直して崩れるのを防ぐ（A案）。
+    const entry = loadedModels.find((e) => e.vrm === vrm);
+    const savedRest = entry && entry.handRest;               // 既存rest（2回目以降）
+    const collectRest = (entry && !savedRest) ? {} : null;   // 初回ならここへ集めて保存
     const palm = new THREE.Vector3(0, -1, 0); // palms-down at rest (VRM T-pose convention)
     // The little-finger (pinky) side is -Z for BOTH hands at rest. Fingers fold toward the palm
     // normal (-Y); the THUMB opposes them, folding down AND across (-Z) so it wraps over the
@@ -913,13 +919,18 @@ function setupHandPose(vrm) {
                         (dd ? `(${dd.x.toFixed(2)},${dd.y.toFixed(2)},${dd.z.toFixed(2)})` : "none(reused)") +
                         ` curlAxis=(${axis.x.toFixed(2)},${axis.y.toFixed(2)},${axis.z.toFixed(2)})`);
                 }
+                const bname = side + FINGERS[fi] + joints[ji];
+                let restQuat;
+                if (savedRest && savedRest[bname]) restQuat = new THREE.Quaternion().fromArray(savedRest[bname]); // 保存restを使用
+                else { restQuat = node.quaternion.clone(); if (collectRest) collectRest[bname] = restQuat.toArray(); } // 初回は現在値=rest
                 handPoseBones[side].push({
-                    node, name: side + FINGERS[fi] + joints[ji], finger: fi, joint: ji, restQuat: node.quaternion.clone(),
+                    node, name: bname, finger: fi, joint: ji, restQuat,
                     curlAxis: axis, splayAxis: palm.clone(), isThumb, side,
                 });
             }
         }
     }
+    if (entry && collectRest) entry.handRest = collectRest; // 初回ロード時のrestを保存（以後再利用）
 }
 
 // Stamp one hand: blend each finger bone from its rest to the preset pose by weight.
@@ -1276,7 +1287,7 @@ function activateModel(entry) {
     modelRoot = entry.root;
     modelTilt = entry.tilt;
     moveGizmo.attach(modelRoot);
-    moveGizmo.visible = boneEditEnabled;
+    moveGizmo.visible = !boneEditEnabled && !handFocusActive; // 選択(矢印)モードで選択中モデルに表示
     if (currentVRM) {
         computeHeadFeatures(currentVRM);
         computeHandMaskAttr(currentVRM);
@@ -5663,7 +5674,7 @@ function loadRefImage(file) {
 })();
 
 (function setupHelpDialogs() {
-    const APP_VERSION = "v0.2f";
+    const APP_VERSION = "v0.2g";
     const badgeVer = document.querySelector("#app-badge .ver");
     const aboutVer = document.getElementById("about-version");
     if (badgeVer) badgeVer.textContent = APP_VERSION;
