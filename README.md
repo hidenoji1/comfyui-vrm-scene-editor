@@ -44,14 +44,6 @@ git clone https://github.com/hidenoji1/comfyui-vrm-scene-editor.git
 3. フォルダ名を **`comfyui-vrm-scene-editor`** にリネーム
 4. **ComfyUI を再起動**
 
-### 方法C：ComfyUI Manager（任意）
-
-ComfyUI Manager の **Install via Git URL** に次の URL を貼り付けてもインストールできます。
-
-```
-https://github.com/hidenoji1/comfyui-vrm-scene-editor.git
-```
-
 ## 使い方
 
 1. ComfyUI を再起動し、ブラウザを再読み込みする
