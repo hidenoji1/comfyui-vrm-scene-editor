@@ -4104,12 +4104,25 @@ fetch("/vrm-scene-editor/default-folder")
 
 let capturing = false;
 
+// 現在のカメラ角度を rotate(方位角0-360)/vertical(仰角-90..90)/zoom(0-10) で返す。
+// VRM Scene Capture Angle ノードのスライダー自動セット用（撮影時に同梱して送る）。
+function cameraAngle() {
+    const dir = camera.position.clone().sub(orbit.target);
+    const dist = dir.length() || 1;
+    const vertical = THREE.MathUtils.radToDeg(Math.asin(THREE.MathUtils.clamp(dir.y / dist, -1, 1)));
+    let rotate = THREE.MathUtils.radToDeg(Math.atan2(dir.x, dir.z)); // +Z=正面=0, +X=90
+    rotate = ((rotate % 360) + 360) % 360;
+    const zoom = THREE.MathUtils.clamp(10 - dist * 4, 0, 10); // 近いほど大。要キャリブレーション
+    return { rotate: +rotate.toFixed(1), vertical: +vertical.toFixed(1), zoom: +zoom.toFixed(2) };
+}
+
 async function captureType(type, res, transparent, folder, cameraName) {
     const dataURL = renderTypeDataURL(type, res, transparent);
+    const ang = cameraAngle();
     const resp = await fetch("/vrm-scene-editor/capture", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image: dataURL, folder, camera: cameraName, type }),
+        body: JSON.stringify({ image: dataURL, folder, camera: cameraName, type, rotate: ang.rotate, vertical: ang.vertical, zoom: ang.zoom }),
     });
     const result = await resp.json();
     if (!resp.ok) throw new Error(result.error || resp.status);
@@ -5674,7 +5687,7 @@ function loadRefImage(file) {
 })();
 
 (function setupHelpDialogs() {
-    const APP_VERSION = "v0.2g";
+    const APP_VERSION = "v0.2h";
     const badgeVer = document.querySelector("#app-badge .ver");
     const aboutVer = document.getElementById("about-version");
     if (badgeVer) badgeVer.textContent = APP_VERSION;

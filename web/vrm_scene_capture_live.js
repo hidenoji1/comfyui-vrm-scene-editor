@@ -6,16 +6,29 @@ import { api } from "../../scripts/api.js";
 // event; here we find every VRMSceneCapture node whose camera + function match
 // and refresh its in-node image immediately -- no Queue needed.
 
-const NODE_CLASS = "VRMSceneCapture";
+// Both the plain capture node and the angle variant share the live-preview logic.
+const NODE_CLASSES = ["VRMSceneCapture", "VRMSceneCaptureAngle"];
+const ANGLE_CLASS = "VRMSceneCaptureAngle";
 
 // Must mirror _safe_token() in __init__.py so editor-side and node-side keys match.
 const safeToken = (value, fallback) =>
     ((value ?? "").toString().trim().replace(/[^A-Za-z0-9_\-]+/g, "_")) || fallback;
 
 const widgetValue = (node, name) => node.widgets?.find((w) => w?.name === name)?.value;
+const nodeClass = (node) => node.comfyClass || node.type;
+
+// 撮影時のカメラ角度をアングルノードのスライダーへ反映（自動セット）。
+function setAngleWidgets(node, angle) {
+    if (!angle || nodeClass(node) !== ANGLE_CLASS) return;
+    for (const name of ["rotate", "vertical", "zoom"]) {
+        const w = node.widgets?.find((x) => x?.name === name);
+        if (w && typeof angle[name] === "number") w.value = angle[name];
+    }
+    app.graph?.setDirtyCanvas(true, true);
+}
 
 function nodeMatches(node, camera, imageType) {
-    if ((node.comfyClass || node.type) !== NODE_CLASS) return false;
+    if (!NODE_CLASSES.includes(nodeClass(node))) return false;
     return (
         safeToken(widgetValue(node, "camera"), "camera1") === camera &&
         safeToken(widgetValue(node, "type"), "image") === imageType
@@ -71,7 +84,7 @@ app.registerExtension({
     name: "VrmSceneEditor.CaptureLive",
     // Reload the in-node preview whenever the camera/type dropdown changes.
     beforeRegisterNodeDef(nodeType, nodeData) {
-        if (nodeData?.name !== NODE_CLASS) return;
+        if (!NODE_CLASSES.includes(nodeData?.name)) return;
         const origCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const ret = origCreated?.apply(this, arguments);
@@ -92,7 +105,7 @@ app.registerExtension({
     setup() {
         api.addEventListener("vrm_capture", (event) => {
             const detail = event?.detail ?? {};
-            const { camera, type: imageType, preview, token } = detail;
+            const { camera, type: imageType, preview, token, angle } = detail;
             if (!camera || !imageType || !preview) return;
 
             const url = previewUrl(preview, token);
@@ -101,6 +114,7 @@ app.registerExtension({
             for (const node of nodes) {
                 if (nodeMatches(node, camera, imageType)) {
                     applyPreview(node, url);
+                    setAngleWidgets(node, angle); // アングルノードはスライダーも自動セット
                     updated++;
                 }
             }

@@ -524,6 +524,14 @@ def _register_routes():
         camera = _safe_token(data.get("camera"), "camera1")
         image_type = _safe_token(data.get("type"), "image")
 
+        # Camera angle at capture time (for VRMSceneCaptureAngle). Optional/back-compat.
+        def _num(v, d=0.0):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return d
+        angle = {"rotate": _num(data.get("rotate")), "vertical": _num(data.get("vertical")), "zoom": _num(data.get("zoom"))}
+
         folder_str = (data.get("folder") or "").strip()
         folder = Path(folder_str) if folder_str else _default_output_folder()
         try:
@@ -548,6 +556,7 @@ def _register_routes():
             "path": str(out_path),
             "token": token,
             "preview": preview,
+            "angle": angle,
         }
 
         # Live push to the open ComfyUI graph: matching VRMSceneCapture nodes
@@ -562,6 +571,7 @@ def _register_routes():
                     "path": str(out_path),
                     "token": token,
                     "preview": preview,
+                    "angle": angle,
                 },
             )
             pushed = True
@@ -663,8 +673,98 @@ def _preview(pil_img):
     return [{"filename": name, "subfolder": "", "type": "temp"}]
 
 
-NODE_CLASS_MAPPINGS = {"VRMSceneCapture": VRMSceneCapture}
-NODE_DISPLAY_NAME_MAPPINGS = {"VRMSceneCapture": "VRM Scene Capture"}
+def _angle_to_prompt(rotate, vertical, zoom, add_angle_prompt=True):
+    """Map camera rotate/vertical/zoom to easy multiAngle-style prompt words.
+
+    Same vocabulary/thresholds as ComfyUI-Easy-Use's `easy multiAngle`, so the
+    output plugs into the same angle-aware models (ANIMA / Qwen 等).
+    """
+    r = float(rotate) % 360.0
+    if r < 22.5 or r >= 337.5: h = "front view"
+    elif r < 67.5: h = "front-right view"
+    elif r < 112.5: h = "right side view"
+    elif r < 157.5: h = "back-right view"
+    elif r < 202.5: h = "back view"
+    elif r < 247.5: h = "back-left view"
+    elif r < 292.5: h = "left side view"
+    else: h = "front-left view"
+    v = float(vertical)
+    if v < -75: vd = "bottom-looking-up perspective, extreme worm's eye"
+    elif v < -45: vd = "ultra-low angle"
+    elif v < -15: vd = "low angle"
+    elif v < 15: vd = "eye level"
+    elif v < 45: vd = "high angle"
+    elif v < 75: vd = "bird's eye view"
+    else: vd = "top-down perspective, looking straight down"
+    z = float(zoom)
+    if z < 2: d = "extreme wide shot"
+    elif z < 4: d = "wide shot"
+    elif z < 6: d = "medium shot"
+    elif z < 8: d = "close-up"
+    else: d = "extreme close-up"
+    if add_angle_prompt:
+        return f"{h}, {vd}, {d} (horizontal: {int(round(r))}, vertical: {int(round(v))}, zoom: {z:.1f})"
+    return f"{h}, {vd}, {d}"
+
+
+class VRMSceneCaptureAngle:
+    """VRM Scene Capture に、カメラアングルのスライダーを足したノード。
+
+    撮影画像をプレビューしつつ、rotate/vertical/zoom から easy multiAngle と
+    同じ語彙のプロンプト(STRING)と EASY_MULTI_ANGLE 互換の params を出力する。
+    スライダーは撮影時にエディタのカメラ角度で自動セットされる(web拡張)。
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "camera": (CAMERAS, {"default": "camera1"}),
+                "type": (CAPTURE_TYPES, {"default": "image"}),
+                "rotate": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 360.0, "step": 1.0, "display": "slider"}),
+                "vertical": ("FLOAT", {"default": 0.0, "min": -90.0, "max": 90.0, "step": 1.0, "display": "slider"}),
+                "zoom": ("FLOAT", {"default": 5.0, "min": 0.0, "max": 10.0, "step": 0.1, "display": "slider"}),
+                "add_angle_prompt": ("BOOLEAN", {"default": True}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "STRING", "STRING", "EASY_MULTI_ANGLE")
+    RETURN_NAMES = ("image", "path", "string", "params")
+    FUNCTION = "load"
+    CATEGORY = "VRM Scene Editor"
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(cls, camera, type, rotate, vertical, zoom, add_angle_prompt):
+        entry, _c, _t = VRMSceneCapture._lookup(camera, type)
+        tok = entry["token"] if entry else "none"
+        return f"{tok}|{rotate}|{vertical}|{zoom}|{add_angle_prompt}"
+
+    def load(self, camera, type, rotate, vertical, zoom, add_angle_prompt):
+        import numpy as np
+        import torch
+        from PIL import Image, ImageOps
+
+        prompt = _angle_to_prompt(rotate, vertical, zoom, add_angle_prompt)
+        params = [{
+            "rotate": int(round(float(rotate))), "vertical": int(round(float(vertical))),
+            "zoom": float(zoom), "add_angle_prompt": bool(add_angle_prompt),
+        }]
+
+        entry, cam, typ = VRMSceneCapture._lookup(camera, type)
+        path = entry.get("path") if entry else None
+        if not entry or not path or not Path(path).is_file():
+            empty = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+            return {"ui": {"images": []}, "result": (empty, "", prompt, params)}
+
+        img = ImageOps.exif_transpose(Image.open(path))
+        rgb = np.asarray(img.convert("RGB"), dtype=np.float32) / 255.0
+        image = torch.from_numpy(rgb)[None, ...]
+        return {"ui": {"images": _preview(img)}, "result": (image, path, prompt, params)}
+
+
+NODE_CLASS_MAPPINGS = {"VRMSceneCapture": VRMSceneCapture, "VRMSceneCaptureAngle": VRMSceneCaptureAngle}
+NODE_DISPLAY_NAME_MAPPINGS = {"VRMSceneCapture": "VRM Scene Capture", "VRMSceneCaptureAngle": "VRM Scene Capture Angle"}
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 
